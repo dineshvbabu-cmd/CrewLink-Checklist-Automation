@@ -17,6 +17,12 @@ def auth_headers(username: str = "admin", password: str = "CrewlinkAdmin!23") ->
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_healthcheck_is_public():
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
 def test_ai_check_returns_matrix_driven_summary():
     response = client.post("/api/ai/check/c002", headers=auth_headers("rc", "CrewlinkRC!23"))
     assert response.status_code == 200

@@ -83,6 +83,11 @@ def now_stamp() -> str:
     return datetime.now(UTC).strftime("%d-%b-%Y %H:%M UTC")
 
 
+@app.get("/api/health")
+def healthcheck():
+    return {"ok": True, "service": "crewlink-ace-api"}
+
+
 BASE_VESSEL = {
     "id": "v001",
     "name": "ALKEBULAN",

@@ -4,7 +4,7 @@ dockerfilePath = "backend/Dockerfile"
 
 [deploy]
 startCommand = "python main.py"
-healthcheckPath = "/api/vessel"
+healthcheckPath = "/api/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
