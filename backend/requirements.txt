@@ -3,5 +3,6 @@ uvicorn[standard]==0.32.1
 anthropic==0.40.0
 python-multipart==0.0.17
 httpx==0.28.1
+psycopg[binary]==3.2.9
 reportlab==4.2.5
 pytest==8.3.4
