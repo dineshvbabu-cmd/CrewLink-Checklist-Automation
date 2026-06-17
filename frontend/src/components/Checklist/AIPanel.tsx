@@ -139,6 +139,15 @@ export default function AIPanel({
               {integrationStatus && (
                 <div className="mt-3 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 flex flex-wrap gap-3">
                   <span>
+                    AI mode: <strong>{integrationStatus.ai.mode}</strong>
+                  </span>
+                  <span>
+                    AI provider: <strong>{integrationStatus.ai.provider}</strong>
+                  </span>
+                  <span>
+                    AI model: <strong>{integrationStatus.ai.model}</strong>
+                  </span>
+                  <span>
                     Portal mode: <strong>{integrationStatus.portal.mode}</strong>
                   </span>
                   <span>

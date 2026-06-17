@@ -443,6 +443,94 @@ VESSEL_MATRIX = {
 }
 
 
+def _clone_document_bundle(template_crew_id: str, replacements: Dict[str, str]) -> Dict[str, Any]:
+    bundle = deepcopy(BASE_DOCUMENTS[template_crew_id])
+    for section in bundle["sections"]:
+        for item in section["items"]:
+            if item.get("docNo"):
+                updated_doc_no = item["docNo"]
+                for source, target in replacements.items():
+                    updated_doc_no = updated_doc_no.replace(source, target)
+                item["docNo"] = updated_doc_no
+    return bundle
+
+
+def _seed_sample_replacements() -> None:
+    extra_crew = [
+        {
+            "id": "c004",
+            "srNo": 4,
+            "rank": "A3O",
+            "name": "Rohit Kishore Nair",
+            "empNo": "A9104",
+            "nationality": "Indian",
+            "travelDate": "02-Aug-2026",
+            "signOnDate": "05-Aug-2026",
+            "reliefDue": "05-Feb-2027",
+            "relieverRank": "A3O",
+            "relieverName": "Francis Zamani Duniya",
+            "relieverApproved": True,
+            "aiStatus": "red",
+            "complianceIssue": True,
+            "status": "planned",
+        },
+        {
+            "id": "c005",
+            "srNo": 5,
+            "rank": "CO",
+            "name": "Emmanuel Bassey",
+            "empNo": "A9105",
+            "nationality": "Nigerian",
+            "travelDate": "30-Jul-2026",
+            "signOnDate": "02-Aug-2026",
+            "reliefDue": "02-Feb-2027",
+            "relieverRank": "CO",
+            "relieverName": "Anish Ranjan Singh",
+            "relieverApproved": True,
+            "aiStatus": "yellow",
+            "complianceIssue": False,
+            "status": "planned",
+        },
+        {
+            "id": "c006",
+            "srNo": 6,
+            "rank": "MST",
+            "name": "Jose Manuel Cruz",
+            "empNo": "A9106",
+            "nationality": "Filipino",
+            "travelDate": "12-Aug-2026",
+            "signOnDate": "15-Aug-2026",
+            "reliefDue": "15-Feb-2027",
+            "relieverRank": "MST",
+            "relieverName": "Hilton Henry Barreto",
+            "relieverApproved": False,
+            "aiStatus": "green",
+            "complianceIssue": False,
+            "status": "planned",
+        },
+    ]
+    BASE_CREW.extend(extra_crew)
+
+    BASE_DOCUMENTS.update(
+        {
+            "c004": _clone_document_bundle("c002", {"A5743": "A9104"}),
+            "c005": _clone_document_bundle("c003", {"A0806": "A9105"}),
+            "c006": _clone_document_bundle("c001", {"A6227": "A9106"}),
+        }
+    )
+
+    BASE_CONFIRMATION.update(
+        {
+            "c004": deepcopy(BASE_CONFIRMATION["c002"]),
+            "c005": deepcopy(BASE_CONFIRMATION["c003"]),
+            "c006": deepcopy(BASE_CONFIRMATION["c001"]),
+        }
+    )
+
+
+_seed_sample_replacements()
+
+
 class PortalVerifyRequest(BaseModel):
     docName: str
     docNo: str
@@ -537,6 +625,52 @@ def _portal_configuration() -> Dict[str, Any]:
         "baseUrl": base_url,
         "storagePath": data_dir(),
         "databasePath": db_path(),
+    }
+
+
+def _ai_configuration() -> Dict[str, Any]:
+    preferred = os.environ.get("AI_PROVIDER", "auto").strip().lower()
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    if preferred == "openai" and openai_key:
+        return {
+            "provider": "openai",
+            "configured": True,
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+            "baseUrl": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            "apiKey": openai_key,
+        }
+    if preferred == "anthropic" and anthropic_key:
+        return {
+            "provider": "anthropic",
+            "configured": True,
+            "model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": anthropic_key,
+        }
+    if openai_key:
+        return {
+            "provider": "openai",
+            "configured": True,
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+            "baseUrl": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            "apiKey": openai_key,
+        }
+    if anthropic_key:
+        return {
+            "provider": "anthropic",
+            "configured": True,
+            "model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": anthropic_key,
+        }
+    return {
+        "provider": "fallback",
+        "configured": False,
+        "model": "rule-based",
+        "baseUrl": "",
+        "apiKey": "",
     }
 
 
@@ -793,8 +927,8 @@ def _get_fallback_narrative(crew_id: str) -> str:
 
 
 async def _generate_ai_narrative(crew_id: str) -> str:
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not anthropic_key:
+    ai_configuration = _ai_configuration()
+    if not ai_configuration["configured"]:
         return _get_fallback_narrative(crew_id)
 
     crew = _find_crew_member(crew_id)
@@ -834,9 +968,48 @@ Provide a concise 3-4 sentence assessment with:
 """
 
     try:
-        client = anthropic.Anthropic(api_key=anthropic_key)
+        if ai_configuration["provider"] == "openai":
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{ai_configuration['baseUrl']}/responses",
+                    headers={
+                        "Authorization": f"Bearer {ai_configuration['apiKey']}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": ai_configuration["model"],
+                        "max_output_tokens": 400,
+                        "input": [
+                            {
+                                "role": "system",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "You are a maritime compliance officer helping RC and Ops review sign-on checklist readiness.",
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": prompt}],
+                            },
+                        ],
+                    },
+                )
+            response.raise_for_status()
+            payload = response.json()
+            output_text = (payload.get("output_text") or "").strip()
+            if output_text:
+                return output_text
+            for item in payload.get("output", []):
+                for content in item.get("content", []):
+                    if content.get("type") in {"output_text", "text"} and content.get("text"):
+                        return str(content["text"]).strip()
+            return _get_fallback_narrative(crew_id)
+
+        client = anthropic.Anthropic(api_key=ai_configuration["apiKey"])
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=ai_configuration["model"],
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1028,11 +1201,18 @@ def logout(current_user: Dict[str, Any] = Depends(require_user())):
 @app.get("/api/integrations/status")
 def get_integrations_status(current_user: Dict[str, Any] = Depends(require_user())):
     portal_configuration = _portal_configuration()
+    ai_configuration = _ai_configuration()
     return {
         "portal": {
             "provider": portal_configuration["provider"],
             "configured": portal_configuration["configured"],
             "mode": "external" if portal_configuration["configured"] else "mock",
+        },
+        "ai": {
+            "provider": ai_configuration["provider"],
+            "configured": ai_configuration["configured"],
+            "model": ai_configuration["model"],
+            "mode": "external" if ai_configuration["configured"] else "fallback",
         },
         "storage": {
             "databasePath": portal_configuration["databasePath"],
@@ -1222,15 +1402,23 @@ async def upload_document_attachment(
     )
     item["attachmentUrl"] = f"/api/files/{attachment['fileId']}"
     item["attachmentName"] = attachment["originalName"]
+    item["missing"] = False
+    item["verifiedRC"] = True
+    item["verifiedOps"] = False
+    item["portalVerified"] = False
+    item["overrideStatus"] = ""
+    item["overrideReason"] = ""
+    item["aiStatus"] = "yellow"
+    _recalculate_crew(crew_id)
     _append_audit(
         crew_id,
         actor=current_user["fullName"],
         action="attachment_uploaded",
         target=item["name"],
-        message=f"Uploaded attachment {attachment['originalName']}.",
+        message=f"Uploaded attachment {attachment['originalName']} and queued the document for AI and portal review.",
     )
     persist_state()
-    return {"ok": True, "item": item}
+    return {"ok": True, "item": item, "summary": STATE["documents"][crew_id]["summary"]}
 
 
 @app.post("/api/crew/{crew_id}/confirmation/{sr_no}")

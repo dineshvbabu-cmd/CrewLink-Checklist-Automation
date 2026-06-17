@@ -266,7 +266,8 @@ export default function ChecklistModal({ member, onClose }: Props) {
     try {
       await uploadDocumentAttachment(member.id, srNo, file)
       await Promise.all([refreshCoreData(), refreshSideData()])
-      setInfoMessage(`${file.name} uploaded successfully.`)
+      await handleAICheck()
+      setInfoMessage(`${file.name} uploaded successfully and re-checked against the vessel matrix.`)
     } finally {
       setUploadingSrNo(null)
     }

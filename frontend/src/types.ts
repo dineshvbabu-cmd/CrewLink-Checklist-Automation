@@ -162,6 +162,12 @@ export interface IntegrationStatus {
     configured: boolean
     mode: 'mock' | 'external'
   }
+  ai: {
+    provider: string
+    configured: boolean
+    model: string
+    mode: 'external' | 'fallback'
+  }
   storage: {
     databasePath: string
     uploadsPath: string
