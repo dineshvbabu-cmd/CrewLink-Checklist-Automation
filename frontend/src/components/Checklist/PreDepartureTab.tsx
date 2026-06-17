@@ -3,6 +3,12 @@ import { Paperclip } from 'lucide-react'
 import type { DocumentsData, PortalVerificationResult } from '../../types'
 import TrafficLight from '../Common/TrafficLight'
 
+const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
+  green: 'Good',
+  yellow: 'Pending',
+  red: 'Missing',
+}
+
 interface Props {
   data: DocumentsData
   approvedBy?: string
@@ -99,6 +105,8 @@ export default function PreDepartureTab({
                   const isEditorOpen = inlineEditor?.srNo === item.srNo
                   const canShowCombinedEditor =
                     canEditRemark || (canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow'))
+                  const displayStatus = item.overrideStatus || item.aiStatus
+                  const showOverrideSection = canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.overrideStatus)
 
                   return (
                     <Fragment key={`${section.title}-${item.srNo}`}>
@@ -188,7 +196,12 @@ export default function PreDepartureTab({
                           )}
                         </td>
                         <td className="text-center">
-                          <TrafficLight status={isMissing ? 'red' : item.aiStatus} size={11} />
+                          <div className="flex flex-col items-center gap-1">
+                            <TrafficLight status={isMissing ? 'red' : item.aiStatus} size={11} />
+                            <span className="text-[10px] font-medium text-slate-500">
+                              {STATUS_LABELS[(displayStatus || 'red') as 'green' | 'yellow' | 'red']}
+                            </span>
+                          </div>
                         </td>
                         <td>
                           <div className="flex flex-col gap-1">
@@ -199,8 +212,16 @@ export default function PreDepartureTab({
                             ) : (
                               <span className="text-xs text-gray-400 italic">No remark</span>
                             )}
+                            {item.overrideStatus && item.overrideReason && (
+                              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                                  AI Override: {STATUS_LABELS[item.overrideStatus as 'green' | 'yellow' | 'red']}
+                                </div>
+                                <div className="text-xs text-amber-900">{item.overrideReason}</div>
+                              </div>
+                            )}
                             <div className="flex gap-2 flex-wrap">
-                              {canShowCombinedEditor && (
+                              {canEditRemark && (
                                 <button
                                   className="link-blue text-xs"
                                   onClick={() =>
@@ -212,17 +233,32 @@ export default function PreDepartureTab({
                                     })
                                   }
                                 >
-                                  {isEditorOpen ? 'Hide Actions' : item.remark ? 'Edit Remark / AI' : 'Remark / AI'}
+                                  {isEditorOpen ? 'Hide Editor' : item.remark ? 'Edit Remark' : 'Add Remark'}
+                                </button>
+                              )}
+                              {showOverrideSection && (
+                                <button
+                                  className="link-blue text-xs"
+                                  onClick={() =>
+                                    onOpenInlineEditor({
+                                      srNo: item.srNo,
+                                      name: item.name,
+                                      currentRemark: item.remark,
+                                      currentStatus: (item.overrideStatus || item.aiStatus) as 'green' | 'yellow' | 'red',
+                                    })
+                                  }
+                                >
+                                  {item.overrideStatus ? 'Edit Override AI' : 'Override AI'}
                                 </button>
                               )}
                             </div>
                           </div>
                         </td>
                       </tr>
-                      {isEditorOpen && inlineEditor && (
+                      {isEditorOpen && inlineEditor && canShowCombinedEditor && (
                         <tr>
                           <td colSpan={11} className="bg-slate-50 px-4 py-4">
-                            <div className={`grid gap-4 ${canOverride ? 'lg:grid-cols-2' : 'grid-cols-1'}`}>
+                            <div className={`grid gap-4 ${showOverrideSection ? 'lg:grid-cols-2' : 'grid-cols-1'}`}>
                               {canEditRemark && (
                                 <div className="rounded border border-slate-200 bg-white p-4">
                                   <div className="text-sm font-semibold text-slate-900">Remark</div>
@@ -248,20 +284,20 @@ export default function PreDepartureTab({
                                 </div>
                               )}
 
-                              {canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow') && (
+                              {showOverrideSection && (
                                 <div className="rounded border border-amber-200 bg-amber-50 p-4">
                                   <div className="text-sm font-semibold text-slate-900">AI Override</div>
                                   <div className="mt-1 text-xs text-slate-500">
-                                    Keep override beside the remark so Ops can review both together.
+                                    Set the AI outcome clearly as Good, Pending, or Missing and record the reason.
                                   </div>
                                   <select
                                     value={inlineEditor.overrideStatus}
                                     onChange={event => onInlineOverrideStatusChange(event.target.value as 'green' | 'yellow' | 'red')}
                                     className="mt-3 w-full rounded border border-slate-300 px-3 py-2 text-sm"
                                   >
-                                    <option value="green">Green</option>
-                                    <option value="yellow">Yellow</option>
-                                    <option value="red">Red</option>
+                                    <option value="green">Good</option>
+                                    <option value="yellow">Pending</option>
+                                    <option value="red">Missing</option>
                                   </select>
                                   <textarea
                                     value={inlineEditor.overrideReason}

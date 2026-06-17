@@ -66,6 +66,9 @@ def test_remark_and_override_are_logged():
     )
     assert override.status_code == 200
     assert override.json()["item"]["aiStatus"] == "green"
+    assert override.json()["item"]["overrideReason"] == "Temporary flag waiver approved"
+    assert override.json()["item"]["missing"] is False
+    assert override.json()["item"]["verifiedOps"] is True
 
     audit = client.get("/api/crew/c002/audit-log", headers=ops_headers).json()
     assert any(entry["action"] == "override" for entry in audit)

@@ -1174,6 +1174,14 @@ def override_document_status(
         item["missing"] = False
         item["verifiedOps"] = True
         item["portalVerified"] = True
+    elif request.status == "yellow":
+        item["missing"] = False
+        item["verifiedOps"] = False
+        item["portalVerified"] = False
+    else:
+        item["missing"] = True
+        item["verifiedOps"] = False
+        item["portalVerified"] = False
     _recalculate_crew(crew_id)
     STATE["learning_feedback"][crew_id].append(
         {
