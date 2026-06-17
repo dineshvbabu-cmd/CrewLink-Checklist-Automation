@@ -187,7 +187,7 @@ export default function SeafarerProfile({ member, docs }: Props) {
                         <td className="text-xs">{item.expiryDate}</td>
                         <td className="text-xs text-gray-500">DG Shipping</td>
                         <td className="text-center">
-                          {item.verifiedOps ? <span className="tick-verified">✓</span> : <span className="text-gray-400 text-xs">Pending</span>}
+                          {item.verifiedOps ? <span className="tick-verified">OK</span> : <span className="text-gray-400 text-xs">Pending</span>}
                         </td>
                       </tr>
                     ))}

@@ -1,7 +1,10 @@
 import { Link } from 'react-router-dom'
 import { Bell, HelpCircle, LogOut, Settings, User } from 'lucide-react'
+import { useAuth } from '../../auth'
 
 export default function Navbar() {
+  const { user, logout } = useAuth()
+
   return (
     <header style={{ backgroundColor: '#1a2a4a' }} className="text-white">
       <div className="flex items-center justify-between px-4 py-2 gap-4 flex-wrap">
@@ -44,10 +47,10 @@ export default function Navbar() {
               <User size={14} />
             </div>
             <div className="text-xs">
-              <div className="font-semibold">Shital Patil</div>
-              <div className="text-blue-300 text-[10px]">Ops Manager</div>
+              <div className="font-semibold">{user?.fullName ?? 'Crewlink User'}</div>
+              <div className="text-blue-300 text-[10px]">{roleLabel(user?.role)}</div>
             </div>
-            <button className="text-blue-300 hover:text-white ml-1">
+            <button className="text-blue-300 hover:text-white ml-1" onClick={() => void logout()}>
               <LogOut size={14} />
             </button>
           </div>
@@ -63,4 +66,11 @@ export default function Navbar() {
       </div>
     </header>
   )
+}
+
+function roleLabel(role?: 'admin' | 'rc' | 'ops') {
+  if (role === 'admin') return 'Administrator'
+  if (role === 'rc') return 'RC Officer'
+  if (role === 'ops') return 'Ops Manager'
+  return 'User'
 }

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Bot, X } from 'lucide-react'
+import { useAuth } from '../../auth'
 import type {
   AICheckResult,
   ConfirmationItem,
   CrewMember,
   CrewReport,
   DocumentsData,
+  IntegrationStatus,
   PortalVerificationResult,
   SelfServicePacket,
 } from '../../types'
@@ -15,11 +17,14 @@ import {
   getCrewReport,
   getDocuments,
   getExportChecklistUrl,
+  getIntegrationStatus,
   getLatestSelfServiceLink,
   overrideDocumentStatus,
   runAICheck,
   sendSelfServiceLink,
+  updateConfirmationItem,
   updateDocumentRemark,
+  uploadDocumentAttachment,
   verifyPortal,
   verifyPortalBatch,
 } from '../../api'
@@ -67,33 +72,57 @@ function applyVerificationResult(currentDocs: DocumentsData, result: PortalVerif
 }
 
 export default function ChecklistModal({ member, onClose }: Props) {
+  const { user } = useAuth()
   const [activeTab, setActiveTab] = useState(0)
   const [docs, setDocs] = useState<DocumentsData | null>(null)
   const [confirmation, setConfirmation] = useState<ConfirmationItem[] | null>(null)
   const [aiResult, setAiResult] = useState<AICheckResult | null>(null)
   const [report, setReport] = useState<CrewReport | null>(null)
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null)
   const [auditEntries, setAuditEntries] = useState<CrewReport['auditLog']>([])
   const [latestLink, setLatestLink] = useState<SelfServicePacket | null>(null)
   const [verificationResults, setVerificationResults] = useState<Record<string, PortalVerificationResult>>({})
   const [verifyingDoc, setVerifyingDoc] = useState<string | null>(null)
+  const [uploadingSrNo, setUploadingSrNo] = useState<number | null>(null)
   const [portalSummary, setPortalSummary] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [portalRunning, setPortalRunning] = useState(false)
   const [sendingLink, setSendingLink] = useState(false)
+  const [savingEditor, setSavingEditor] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [remarkEditor, setRemarkEditor] = useState<{ srNo: number; name: string; value: string } | null>(null)
+  const [overrideEditor, setOverrideEditor] = useState<{
+    srNo: number
+    name: string
+    status: 'green' | 'yellow' | 'red'
+    reason: string
+  } | null>(null)
+  const [confirmationEditor, setConfirmationEditor] = useState<{
+    srNo: number
+    description: string
+    verifyOps: boolean
+    officeRemark: string
+  } | null>(null)
 
   const activeStatus = aiResult?.overallStatus ?? member.aiStatus
+  const canEditRemark = !!user && ['rc', 'ops', 'admin'].includes(user.role)
+  const canOverride = !!user && ['ops', 'admin'].includes(user.role)
+  const canSendSelfService = !!user && ['rc', 'admin'].includes(user.role)
+  const canUpload = !!user && ['rc', 'ops', 'admin'].includes(user.role)
+  const canUpdateOps = !!user && ['ops', 'admin'].includes(user.role)
 
   const refreshSideData = async () => {
-    const [reportResponse, auditResponse, linkResponse] = await Promise.all([
+    const [reportResponse, auditResponse, linkResponse, integrationResponse] = await Promise.all([
       getCrewReport(member.id),
       getAuditLog(member.id),
       getLatestSelfServiceLink(member.id),
+      getIntegrationStatus(),
     ])
     setReport(reportResponse)
     setAuditEntries(auditResponse)
     setLatestLink(linkResponse)
+    setIntegrationStatus(integrationResponse)
   }
 
   const refreshCoreData = async () => {
@@ -107,8 +136,7 @@ export default function ChecklistModal({ member, onClose }: Props) {
 
   useEffect(() => {
     setLoading(true)
-    Promise.all([refreshCoreData(), refreshSideData()])
-      .finally(() => setLoading(false))
+    Promise.all([refreshCoreData(), refreshSideData()]).finally(() => setLoading(false))
   }, [member.id])
 
   useEffect(() => {
@@ -167,36 +195,66 @@ export default function ChecklistModal({ member, onClose }: Props) {
     }
   }
 
-  const handleEditRemark = async (srNo: number, currentRemark: string) => {
-    const remark = window.prompt('Enter or update the remark for this checklist item:', currentRemark)
-    if (remark === null) {
+  const handleSaveRemark = async () => {
+    if (!remarkEditor) {
       return
     }
-
-    await updateDocumentRemark(member.id, srNo, remark, 'RC Team')
-    await Promise.all([refreshCoreData(), refreshSideData()])
-    setInfoMessage('Remark saved and added to the audit trail.')
+    setSavingEditor(true)
+    try {
+      await updateDocumentRemark(member.id, remarkEditor.srNo, remarkEditor.value, user?.fullName ?? 'RC Team')
+      setRemarkEditor(null)
+      await Promise.all([refreshCoreData(), refreshSideData()])
+      setInfoMessage('Remark saved and added to the audit trail.')
+    } finally {
+      setSavingEditor(false)
+    }
   }
 
-  const handleOverride = async (srNo: number, currentStatus: 'green' | 'yellow' | 'red') => {
-    const nextStatus = window.prompt('Override AI status to green, yellow, or red:', currentStatus)
-    if (!nextStatus || !['green', 'yellow', 'red'].includes(nextStatus)) {
+  const handleSaveOverride = async () => {
+    if (!overrideEditor) {
       return
     }
-    const reason = window.prompt('Reason for the override:', '')
-    if (reason === null || !reason.trim()) {
-      return
+    setSavingEditor(true)
+    try {
+      await overrideDocumentStatus(
+        member.id,
+        overrideEditor.srNo,
+        overrideEditor.status,
+        overrideEditor.reason,
+        user?.fullName ?? 'Ops Team',
+      )
+      setOverrideEditor(null)
+      await handleAICheck()
+      setInfoMessage('AI override recorded for learning feedback and audit.')
+    } finally {
+      setSavingEditor(false)
     }
+  }
 
-    await overrideDocumentStatus(member.id, srNo, nextStatus as 'green' | 'yellow' | 'red', reason, 'Shital Patil')
-    await handleAICheck()
-    setInfoMessage('AI override recorded for learning feedback and audit.')
+  const handleSaveConfirmation = async () => {
+    if (!confirmationEditor) {
+      return
+    }
+    setSavingEditor(true)
+    try {
+      await updateConfirmationItem(
+        member.id,
+        confirmationEditor.srNo,
+        confirmationEditor.verifyOps,
+        confirmationEditor.officeRemark,
+      )
+      setConfirmationEditor(null)
+      await Promise.all([refreshCoreData(), refreshSideData()])
+      setInfoMessage('Departure Ops item updated successfully.')
+    } finally {
+      setSavingEditor(false)
+    }
   }
 
   const handleSendToSeafarer = async () => {
     setSendingLink(true)
     try {
-      const packet = await sendSelfServiceLink(member.id, 'RC Team')
+      const packet = await sendSelfServiceLink(member.id, user?.fullName ?? 'RC Team')
       setLatestLink(packet)
       await refreshSideData()
       setInfoMessage('Self-service approval link generated and ready to share.')
@@ -205,8 +263,25 @@ export default function ChecklistModal({ member, onClose }: Props) {
     }
   }
 
+  const handleUploadAttachment = async (srNo: number, file: File) => {
+    setUploadingSrNo(srNo)
+    try {
+      await uploadDocumentAttachment(member.id, srNo, file)
+      await Promise.all([refreshCoreData(), refreshSideData()])
+      setInfoMessage(`${file.name} uploaded successfully.`)
+    } finally {
+      setUploadingSrNo(null)
+    }
+  }
+
   const handleExportPdf = () => {
     window.open(getExportChecklistUrl(member.id), '_blank', 'noopener,noreferrer')
+  }
+
+  const closeEditors = () => {
+    setRemarkEditor(null)
+    setOverrideEditor(null)
+    setConfirmationEditor(null)
   }
 
   return (
@@ -296,6 +371,90 @@ export default function ChecklistModal({ member, onClose }: Props) {
                 </div>
               )}
 
+              {(remarkEditor || overrideEditor || confirmationEditor) && (
+                <div className="rounded border border-slate-200 bg-slate-50 p-4">
+                  {remarkEditor && (
+                    <div className="grid gap-3">
+                      <div className="text-sm font-semibold text-slate-900">Update Remark</div>
+                      <div className="text-xs text-slate-500">{remarkEditor.name}</div>
+                      <textarea
+                        value={remarkEditor.value}
+                        onChange={event => setRemarkEditor({ ...remarkEditor, value: event.target.value })}
+                        rows={4}
+                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
+                        <button className="rounded bg-slate-900 px-3 py-2 text-sm text-white" disabled={savingEditor} onClick={() => void handleSaveRemark()}>
+                          {savingEditor ? 'Saving...' : 'Save Remark'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {overrideEditor && (
+                    <div className="grid gap-3">
+                      <div className="text-sm font-semibold text-slate-900">Override AI Status</div>
+                      <div className="text-xs text-slate-500">{overrideEditor.name}</div>
+                      <select
+                        value={overrideEditor.status}
+                        onChange={event => setOverrideEditor({ ...overrideEditor, status: event.target.value as 'green' | 'yellow' | 'red' })}
+                        className="rounded border border-slate-300 px-3 py-2 text-sm"
+                      >
+                        <option value="green">Green</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="red">Red</option>
+                      </select>
+                      <textarea
+                        value={overrideEditor.reason}
+                        onChange={event => setOverrideEditor({ ...overrideEditor, reason: event.target.value })}
+                        rows={4}
+                        placeholder="Explain why the AI status is being overridden"
+                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
+                        <button
+                          className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
+                          disabled={savingEditor || !overrideEditor.reason.trim()}
+                          onClick={() => void handleSaveOverride()}
+                        >
+                          {savingEditor ? 'Saving...' : 'Save Override'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {confirmationEditor && (
+                    <div className="grid gap-3">
+                      <div className="text-sm font-semibold text-slate-900">Update Departure Ops Item</div>
+                      <div className="text-xs text-slate-500">{confirmationEditor.description}</div>
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={confirmationEditor.verifyOps}
+                          onChange={event => setConfirmationEditor({ ...confirmationEditor, verifyOps: event.target.checked })}
+                        />
+                        Mark as verified by Ops
+                      </label>
+                      <textarea
+                        value={confirmationEditor.officeRemark}
+                        onChange={event => setConfirmationEditor({ ...confirmationEditor, officeRemark: event.target.value })}
+                        rows={4}
+                        placeholder="Add Ops remarks"
+                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
+                        <button className="rounded bg-slate-900 px-3 py-2 text-sm text-white" disabled={savingEditor} onClick={() => void handleSaveConfirmation()}>
+                          {savingEditor ? 'Saving...' : 'Save Ops Update'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {activeTab === 0 && (
                 <>
                   <AIPanel
@@ -303,6 +462,7 @@ export default function ChecklistModal({ member, onClose }: Props) {
                     loading={aiLoading}
                     portalRunning={portalRunning}
                     portalSummary={portalSummary}
+                    integrationStatus={integrationStatus}
                     crewName={member.name}
                     rank={member.rank}
                     onRunCheck={() => void handleAICheck()}
@@ -318,10 +478,21 @@ export default function ChecklistModal({ member, onClose }: Props) {
                   data={docs}
                   approvedBy={activeStatus === 'green' ? 'S. Patil on 17-Jun-2026 10:30' : undefined}
                   verifyingDoc={verifyingDoc}
+                  uploadingSrNo={uploadingSrNo}
                   verificationResults={verificationResults}
                   onVerifyDocument={handleVerifyDocument}
-                  onEditRemark={handleEditRemark}
-                  onOverride={handleOverride}
+                  onRequestRemarkEdit={(srNo, name, currentRemark) => {
+                    closeEditors()
+                    setRemarkEditor({ srNo, name, value: currentRemark })
+                  }}
+                  onRequestOverride={(srNo, name, currentStatus) => {
+                    closeEditors()
+                    setOverrideEditor({ srNo, name, status: currentStatus, reason: '' })
+                  }}
+                  onUploadAttachment={(srNo, file) => void handleUploadAttachment(srNo, file)}
+                  canEditRemark={canEditRemark}
+                  canOverride={canOverride}
+                  canUpload={canUpload}
                 />
               )}
 
@@ -331,10 +502,25 @@ export default function ChecklistModal({ member, onClose }: Props) {
                   sending={sendingLink}
                   latestLink={latestLink}
                   onSend={() => void handleSendToSeafarer()}
+                  canSend={canSendSelfService}
                 />
               )}
 
-              {activeTab === 2 && confirmation && <DepartureOpsTab items={confirmation} />}
+              {activeTab === 2 && confirmation && (
+                <DepartureOpsTab
+                  items={confirmation}
+                  canEdit={canUpdateOps}
+                  onEdit={item => {
+                    closeEditors()
+                    setConfirmationEditor({
+                      srNo: item.srNo,
+                      description: item.description,
+                      verifyOps: item.verifyOps,
+                      officeRemark: item.officeRemark,
+                    })
+                  }}
+                />
+              )}
 
               <AuditLogPanel entries={auditEntries} />
             </div>

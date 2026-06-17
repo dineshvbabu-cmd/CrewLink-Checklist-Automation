@@ -1,12 +1,15 @@
 import axios from 'axios'
 import type {
   AICheckResult,
+  AuthUser,
   AuditEntry,
   ConfirmationItem,
   CrewMember,
   CrewReport,
   DocumentsData,
   ExtractionReport,
+  IntegrationStatus,
+  LoginResponse,
   MatrixReport,
   PortalBatchResult,
   PortalVerificationResult,
@@ -17,8 +20,22 @@ import type {
 const BASE = import.meta.env.VITE_API_URL || '/api'
 
 const api = axios.create({ baseURL: BASE })
+let authToken = ''
+
+export function setAuthToken(token: string | null) {
+  authToken = token || ''
+  if (authToken) {
+    api.defaults.headers.common.Authorization = `Bearer ${authToken}`
+  } else {
+    delete api.defaults.headers.common.Authorization
+  }
+}
 
 export const getExportChecklistUrl = (crewId: string) => `${BASE}/crew/${crewId}/export-checklist`
+export const login = (username: string, password: string): Promise<LoginResponse> => api.post('/auth/login', { username, password }).then(response => response.data)
+export const getCurrentUser = (): Promise<AuthUser> => api.get('/auth/me').then(response => response.data)
+export const logout = (): Promise<{ ok: boolean }> => api.post('/auth/logout').then(response => response.data)
+export const getIntegrationStatus = (): Promise<IntegrationStatus> => api.get('/integrations/status').then(response => response.data)
 
 export const getVessel = (): Promise<Vessel> => api.get('/vessel').then(response => response.data)
 export const getCrew = (): Promise<CrewMember[]> => api.get('/crew').then(response => response.data)
@@ -41,6 +58,15 @@ export const updateDocumentRemark = (crewId: string, srNo: number, remark: strin
   api.post(`/crew/${crewId}/documents/${srNo}/remark`, { remark, actor }).then(response => response.data)
 export const overrideDocumentStatus = (crewId: string, srNo: number, status: 'green' | 'yellow' | 'red', reason: string, actor = 'RC Officer') =>
   api.post(`/crew/${crewId}/documents/${srNo}/override`, { status, reason, actor }).then(response => response.data)
+export const uploadDocumentAttachment = (crewId: string, srNo: number, file: File) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api.post(`/crew/${crewId}/documents/${srNo}/attachment`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(response => response.data)
+}
+export const updateConfirmationItem = (crewId: string, srNo: number, verifyOps: boolean, officeRemark: string) =>
+  api.post(`/crew/${crewId}/confirmation/${srNo}`, { verifyOps, officeRemark }).then(response => response.data)
 export const sendSelfServiceLink = (crewId: string, sentBy = 'RC Officer'): Promise<SelfServicePacket> =>
   api.post(`/crew/${crewId}/self-service/send`, { sentBy }).then(response => response.data)
 export const submitSelfServicePacket = (
@@ -50,3 +76,7 @@ export const submitSelfServicePacket = (
     items: Array<{ srNo: number; verifyCrew: boolean; seafarerRemark: string }>
   },
 ): Promise<SelfServicePacket> => api.post(`/self-service/${token}/submit`, payload).then(response => response.data)
+
+if (typeof window !== 'undefined') {
+  setAuthToken(window.localStorage.getItem('crewlink_auth_token'))
+}

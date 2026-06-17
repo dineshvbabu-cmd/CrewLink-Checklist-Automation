@@ -47,6 +47,7 @@ export interface DocumentItem {
   missing: boolean
   required?: boolean
   attachmentUrl?: string
+  attachmentName?: string
   overrideStatus?: string
   overrideReason?: string
   extractionConfidence?: number
@@ -140,6 +141,32 @@ export interface SelfServicePacket {
   submittedBy?: string
   url: string
   items: ConfirmationItem[]
+}
+
+export interface AuthUser {
+  id: string
+  username: string
+  fullName: string
+  role: 'admin' | 'rc' | 'ops'
+  token?: string
+}
+
+export interface LoginResponse {
+  token: string
+  user: AuthUser
+}
+
+export interface IntegrationStatus {
+  portal: {
+    provider: string
+    configured: boolean
+    mode: 'mock' | 'external'
+  }
+  storage: {
+    databasePath: string
+    uploadsPath: string
+  }
+  user: string
 }
 
 export interface CrewReport {

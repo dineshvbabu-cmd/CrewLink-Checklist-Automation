@@ -9,15 +9,32 @@ import os
 import secrets
 
 import anthropic
-from fastapi import FastAPI, HTTPException, Request
+import httpx
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
+
+from persistence import (
+    authenticate_user,
+    create_session,
+    data_dir,
+    db_path,
+    delete_session,
+    get_attachment,
+    get_user_by_token,
+    init_database,
+    load_state,
+    reset_state,
+    save_attachment,
+    save_state,
+)
 
 AIStatus = Literal["green", "yellow", "red", "grey"]
 
@@ -32,6 +49,34 @@ app.add_middleware(
 )
 
 REFERENCE_DATE = "17-Jun-2026"
+TOKEN_SECURITY = HTTPBearer(auto_error=False)
+ROLE_ADMIN = "admin"
+ROLE_RC = "rc"
+ROLE_OPS = "ops"
+
+SEED_USERS = [
+    {
+        "user_id": "u_admin",
+        "username": "admin",
+        "full_name": "Aparna Menon",
+        "role": ROLE_ADMIN,
+        "password": "CrewlinkAdmin!23",
+    },
+    {
+        "user_id": "u_rc",
+        "username": "rc",
+        "full_name": "Prazy Jandyal",
+        "role": ROLE_RC,
+        "password": "CrewlinkRC!23",
+    },
+    {
+        "user_id": "u_ops",
+        "username": "ops",
+        "full_name": "Shital Patil",
+        "role": ROLE_OPS,
+        "password": "CrewlinkOps!23",
+    },
+]
 
 
 def now_stamp() -> str:
@@ -425,19 +470,75 @@ class SelfServiceSubmitRequest(BaseModel):
     items: List[SelfServiceItemSubmission]
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ConfirmationUpdateRequest(BaseModel):
+    verifyOps: bool
+    officeRemark: str = ""
+
+
+class ManualVerificationRequest(BaseModel):
+    verified: bool = True
+    remark: str = ""
+
+
 STATE: Dict[str, Any] = {}
+DEFAULT_STATE: Dict[str, Any] = {
+    "vessel": deepcopy(BASE_VESSEL),
+    "crew": deepcopy(BASE_CREW),
+    "documents": deepcopy(BASE_DOCUMENTS),
+    "confirmation": deepcopy(BASE_CONFIRMATION),
+    "audit_logs": {crew["id"]: [] for crew in BASE_CREW},
+    "self_service_links": {},
+    "latest_link_by_crew": {},
+    "learning_feedback": {crew["id"]: [] for crew in BASE_CREW},
+}
+
+
+def persist_state() -> None:
+    save_state(STATE)
+
+
+def _unauthorized(detail: str = "Authentication required") -> HTTPException:
+    return HTTPException(status_code=401, detail=detail)
+
+
+def require_user(roles: Optional[set[str]] = None):
+    def dependency(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(TOKEN_SECURITY),
+    ) -> Dict[str, Any]:
+        if not credentials or credentials.scheme.lower() != "bearer":
+            raise _unauthorized()
+
+        user = get_user_by_token(credentials.credentials)
+        if not user:
+            raise _unauthorized("Session expired or invalid")
+        if roles and user["role"] not in roles:
+            raise HTTPException(status_code=403, detail="You do not have access to this action")
+        return user
+
+    return dependency
+
+
+def _portal_configuration() -> Dict[str, Any]:
+    provider = os.environ.get("PORTAL_PROVIDER", "mock")
+    base_url = os.environ.get("PORTAL_API_BASE_URL", "").rstrip("/")
+    return {
+        "provider": provider,
+        "configured": bool(base_url),
+        "baseUrl": base_url,
+        "storagePath": data_dir(),
+        "databasePath": db_path(),
+    }
 
 
 def reset_demo_state() -> None:
     STATE.clear()
-    STATE["vessel"] = deepcopy(BASE_VESSEL)
-    STATE["crew"] = deepcopy(BASE_CREW)
-    STATE["documents"] = deepcopy(BASE_DOCUMENTS)
-    STATE["confirmation"] = deepcopy(BASE_CONFIRMATION)
-    STATE["audit_logs"] = {crew["id"]: [] for crew in BASE_CREW}
-    STATE["self_service_links"] = {}
-    STATE["latest_link_by_crew"] = {}
-    STATE["learning_feedback"] = {crew["id"]: [] for crew in BASE_CREW}
+    seeded_state = deepcopy(DEFAULT_STATE)
+    STATE.update(seeded_state)
 
     for crew in STATE["crew"]:
         _recalculate_crew(crew["id"])
@@ -448,6 +549,7 @@ def reset_demo_state() -> None:
             target="Checklist",
             message=f"Demo state prepared for {crew['name']} on {REFERENCE_DATE}.",
         )
+    reset_state(STATE)
 
 
 def _find_crew_member(crew_id: str) -> Dict[str, Any]:
@@ -475,6 +577,13 @@ def _find_document_by_name(crew_id: str, doc_name: str) -> Dict[str, Any]:
     raise HTTPException(status_code=404, detail="Document not found")
 
 
+def _find_confirmation_item(crew_id: str, sr_no: int) -> Dict[str, Any]:
+    for item in STATE["confirmation"].get(crew_id, []):
+        if item["srNo"] == sr_no:
+            return item
+    raise HTTPException(status_code=404, detail="Confirmation item not found")
+
+
 def _append_audit(crew_id: str, actor: str, action: str, target: str, message: str) -> None:
     STATE["audit_logs"][crew_id].insert(
         0,
@@ -494,8 +603,12 @@ def _required_documents_for(crew_id: str) -> List[str]:
     return VESSEL_MATRIX.get(crew["rank"], [])
 
 
-def _hydrate_document_item(item: Dict[str, Any], required_docs: List[str]) -> None:
-    item.setdefault("attachmentUrl", f"/files/{item['srNo']}.pdf" if not item.get("missing") else "")
+def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: List[str]) -> None:
+    if not item.get("missing") and (not item.get("attachmentUrl") or str(item.get("attachmentUrl", "")).startswith("/files/")):
+        item["attachmentUrl"] = f"/api/crew/{crew_id}/documents/{item['srNo']}/placeholder"
+    elif item.get("missing"):
+        item.setdefault("attachmentUrl", "")
+    item.setdefault("attachmentName", f"{item['name']}.pdf" if not item.get("missing") else "")
     item.setdefault("portalVerified", item.get("verifiedOps", False))
     item.setdefault("overrideStatus", "")
     item.setdefault("overrideReason", "")
@@ -514,7 +627,7 @@ def _recalculate_crew(crew_id: str) -> None:
     expired = 0
 
     for item in all_items:
-        _hydrate_document_item(item, required_docs)
+        _hydrate_document_item(crew_id, item, required_docs)
         status = item.get("overrideStatus") or item.get("aiStatus", "grey")
         item["aiStatus"] = status
 
@@ -546,7 +659,44 @@ def _recalculate_crew(crew_id: str) -> None:
         crew["complianceIssue"] = False
 
 
-def _build_portal_response(crew_id: str, doc_name: str) -> Dict[str, Any]:
+async def _build_portal_response(
+    crew_id: str,
+    doc_name: str,
+    doc_no: str = "",
+    issue_authority: Optional[str] = None,
+) -> Dict[str, Any]:
+    portal_configuration = _portal_configuration()
+    if portal_configuration["configured"]:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    f"{portal_configuration['baseUrl']}/verify",
+                    headers={
+                        "Authorization": f"Bearer {os.environ.get('PORTAL_API_TOKEN', '')}".strip(),
+                    },
+                    json={
+                        "crewId": crew_id,
+                        "documentName": doc_name,
+                        "documentNumber": doc_no,
+                        "issueAuthority": issue_authority,
+                    },
+                )
+            response.raise_for_status()
+            payload = response.json()
+            return {
+                "docName": doc_name,
+                "verified": bool(payload.get("verified")),
+                "message": payload.get("message") or f"{doc_name} verified via {portal_configuration['provider']}.",
+                "portal": payload.get("portal") or portal_configuration["provider"],
+            }
+        except Exception as exc:
+            return {
+                "docName": doc_name,
+                "verified": False,
+                "message": f"{portal_configuration['provider']} integration failed: {exc}",
+                "portal": portal_configuration["provider"],
+            }
+
     if crew_id == "c002" and "Flag CDC" in doc_name:
         return {
             "docName": doc_name,
@@ -719,6 +869,25 @@ def _get_latest_link(crew_id: str) -> Optional[Dict[str, Any]]:
     return STATE["self_service_links"].get(token)
 
 
+def _build_placeholder_attachment_pdf(crew_id: str, sr_no: int) -> bytes:
+    crew = _find_crew_member(crew_id)
+    item = _find_document(crew_id, sr_no)
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(40, 800, "Crewlink Checklist Attachment Placeholder")
+    pdf.setFont("Helvetica", 11)
+    pdf.drawString(40, 770, f"Seafarer: {crew['name']} ({crew['rank']})")
+    pdf.drawString(40, 752, f"Document: {item['name']}")
+    pdf.drawString(40, 734, f"Document No: {item.get('docNo') or '-'}")
+    pdf.drawString(40, 716, f"Issue Date: {item.get('issueDate') or '-'}")
+    pdf.drawString(40, 698, f"Expiry Date: {item.get('expiryDate') or '-'}")
+    pdf.drawString(40, 680, f"Generated: {now_stamp()}")
+    pdf.drawString(40, 640, "Upload a real document to replace this placeholder in the production workflow.")
+    pdf.save()
+    return buffer.getvalue()
+
+
 def _resolve_public_base_url(request: Optional[Request] = None) -> str:
     explicit_url = os.environ.get("PUBLIC_APP_URL") or os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
     if explicit_url:
@@ -831,42 +1000,103 @@ def _build_export_pdf(crew_id: str) -> bytes:
     return buffer.getvalue()
 
 
+@app.post("/api/auth/login")
+def login(request: LoginRequest):
+    user = authenticate_user(request.username, request.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = create_session(user["id"])
+    return {"token": token, "user": {**user, "token": token}}
+
+
+@app.get("/api/auth/me")
+def get_current_user_profile(current_user: Dict[str, Any] = Depends(require_user())):
+    return {key: current_user[key] for key in ("id", "username", "fullName", "role")}
+
+
+@app.post("/api/auth/logout")
+def logout(current_user: Dict[str, Any] = Depends(require_user())):
+    delete_session(current_user["token"])
+    return {"ok": True}
+
+
+@app.get("/api/integrations/status")
+def get_integrations_status(current_user: Dict[str, Any] = Depends(require_user())):
+    portal_configuration = _portal_configuration()
+    return {
+        "portal": {
+            "provider": portal_configuration["provider"],
+            "configured": portal_configuration["configured"],
+            "mode": "external" if portal_configuration["configured"] else "mock",
+        },
+        "storage": {
+            "databasePath": portal_configuration["databasePath"],
+            "uploadsPath": os.path.join(data_dir(), "uploads"),
+        },
+        "user": current_user["role"],
+    }
+
+
+@app.get("/api/files/{file_id}")
+def serve_uploaded_file(file_id: str, current_user: Dict[str, Any] = Depends(require_user())):
+    attachment = get_attachment(file_id)
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return FileResponse(
+        attachment["absolutePath"],
+        media_type=attachment["contentType"],
+        filename=attachment["originalName"],
+    )
+
+
+@app.get("/api/crew/{crew_id}/documents/{sr_no}/placeholder")
+def serve_placeholder_attachment(crew_id: str, sr_no: int, current_user: Dict[str, Any] = Depends(require_user())):
+    _find_crew_member(crew_id)
+    payload = _build_placeholder_attachment_pdf(crew_id, sr_no)
+    filename = f"{crew_id}-{sr_no}-placeholder.pdf"
+    return StreamingResponse(
+        BytesIO(payload),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @app.get("/api/vessel")
-def get_vessel():
+def get_vessel(current_user: Dict[str, Any] = Depends(require_user())):
     return STATE["vessel"]
 
 
 @app.get("/api/crew")
-def get_crew():
+def get_crew(current_user: Dict[str, Any] = Depends(require_user())):
     return STATE["crew"]
 
 
 @app.get("/api/crew/{crew_id}")
-def get_crew_member(crew_id: str):
+def get_crew_member(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     return _find_crew_member(crew_id)
 
 
 @app.get("/api/crew/{crew_id}/documents")
-def get_crew_documents(crew_id: str):
+def get_crew_documents(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     _find_crew_member(crew_id)
     _recalculate_crew(crew_id)
     return STATE["documents"][crew_id]
 
 
 @app.get("/api/crew/{crew_id}/confirmation")
-def get_confirmation(crew_id: str):
+def get_confirmation(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     _find_crew_member(crew_id)
     return STATE["confirmation"][crew_id]
 
 
 @app.get("/api/crew/{crew_id}/audit-log")
-def get_audit_log(crew_id: str):
+def get_audit_log(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     _find_crew_member(crew_id)
     return STATE["audit_logs"][crew_id]
 
 
 @app.get("/api/crew/{crew_id}/matrix")
-def get_matrix(crew_id: str):
+def get_matrix(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     crew = _find_crew_member(crew_id)
     return {
         "crewId": crew_id,
@@ -877,19 +1107,23 @@ def get_matrix(crew_id: str):
 
 
 @app.get("/api/crew/{crew_id}/extraction")
-def get_extraction(crew_id: str):
+def get_extraction(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     _find_crew_member(crew_id)
     return _build_extraction_report(crew_id)
 
 
 @app.get("/api/crew/{crew_id}/self-service/latest")
-def get_latest_self_service_link(crew_id: str, request: Request):
+def get_latest_self_service_link(
+    crew_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_user()),
+):
     _find_crew_member(crew_id)
     return _serialize_self_service_packet(_get_latest_link(crew_id), request)
 
 
 @app.get("/api/crew/{crew_id}/export-checklist")
-def export_checklist(crew_id: str):
+def export_checklist(crew_id: str, current_user: Dict[str, Any] = Depends(require_user())):
     _find_crew_member(crew_id)
     pdf_bytes = _build_export_pdf(crew_id)
     filename = f"{crew_id}-prejoining-checklist.pdf"
@@ -901,21 +1135,32 @@ def export_checklist(crew_id: str):
 
 
 @app.post("/api/crew/{crew_id}/documents/{sr_no}/remark")
-def save_remark(crew_id: str, sr_no: int, request: RemarkRequest):
+def save_remark(
+    crew_id: str,
+    sr_no: int,
+    request: RemarkRequest,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
+):
     item = _find_document(crew_id, sr_no)
     item["remark"] = request.remark
     _append_audit(
         crew_id,
-        actor=request.actor,
+        actor=current_user["fullName"],
         action="remark_updated",
         target=item["name"],
         message=f"Updated remark to '{request.remark}'.",
     )
+    persist_state()
     return {"ok": True, "item": item}
 
 
 @app.post("/api/crew/{crew_id}/documents/{sr_no}/override")
-def override_document_status(crew_id: str, sr_no: int, request: OverrideRequest):
+def override_document_status(
+    crew_id: str,
+    sr_no: int,
+    request: OverrideRequest,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_OPS, ROLE_ADMIN})),
+):
     item = _find_document(crew_id, sr_no)
     item["overrideStatus"] = request.status
     item["aiStatus"] = request.status
@@ -935,33 +1180,94 @@ def override_document_status(crew_id: str, sr_no: int, request: OverrideRequest)
     )
     _append_audit(
         crew_id,
-        actor=request.actor,
+        actor=current_user["fullName"],
         action="override",
         target=item["name"],
         message=f"Overrode AI status to {request.status.upper()} with reason: {request.reason}",
     )
+    persist_state()
     return {"ok": True, "item": item, "summary": STATE["documents"][crew_id]["summary"]}
 
 
+@app.post("/api/crew/{crew_id}/documents/{sr_no}/attachment")
+async def upload_document_attachment(
+    crew_id: str,
+    sr_no: int,
+    file: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
+):
+    _find_crew_member(crew_id)
+    item = _find_document(crew_id, sr_no)
+    content = await file.read()
+    attachment = save_attachment(
+        crew_id=crew_id,
+        sr_no=sr_no,
+        original_name=file.filename or f"{item['name']}.pdf",
+        content_type=file.content_type or "application/octet-stream",
+        content=content,
+        uploaded_by=current_user["fullName"],
+    )
+    item["attachmentUrl"] = f"/api/files/{attachment['fileId']}"
+    item["attachmentName"] = attachment["originalName"]
+    _append_audit(
+        crew_id,
+        actor=current_user["fullName"],
+        action="attachment_uploaded",
+        target=item["name"],
+        message=f"Uploaded attachment {attachment['originalName']}.",
+    )
+    persist_state()
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/crew/{crew_id}/confirmation/{sr_no}")
+def update_confirmation_item(
+    crew_id: str,
+    sr_no: int,
+    request: ConfirmationUpdateRequest,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_OPS, ROLE_ADMIN})),
+):
+    item = _find_confirmation_item(crew_id, sr_no)
+    item["verifyOps"] = request.verifyOps
+    item["officeRemark"] = request.officeRemark
+    _append_audit(
+        crew_id,
+        actor=current_user["fullName"],
+        action="departure_ops_updated",
+        target=item["description"],
+        message=f"Updated Ops confirmation to {'verified' if request.verifyOps else 'pending'} with remark: {request.officeRemark or 'No remark'}",
+    )
+    persist_state()
+    return {"ok": True, "item": item}
+
+
 @app.post("/api/crew/{crew_id}/verify-portal")
-async def verify_portal(crew_id: str, request: PortalVerifyRequest):
+async def verify_portal(
+    crew_id: str,
+    request: PortalVerifyRequest,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_OPS, ROLE_ADMIN, ROLE_RC})),
+):
     _find_crew_member(crew_id)
     item = _find_document_by_name(crew_id, request.docName)
     await asyncio.sleep(0.8)
-    result = _build_portal_response(crew_id, request.docName)
+    result = await _build_portal_response(crew_id, request.docName, request.docNo, request.issueAuthority)
     _apply_portal_result(crew_id, item, result)
     _append_audit(
         crew_id,
-        actor="Portal Verifier",
+        actor=current_user["fullName"],
         action="portal_verification",
         target=request.docName,
         message=result["message"],
     )
+    persist_state()
     return result
 
 
 @app.post("/api/crew/{crew_id}/verify-portal-batch")
-async def verify_portal_batch(crew_id: str):
+async def verify_portal_batch(
+    crew_id: str,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_OPS, ROLE_ADMIN, ROLE_RC})),
+):
     _find_crew_member(crew_id)
     await asyncio.sleep(1.0)
     items_to_verify = [
@@ -976,7 +1282,7 @@ async def verify_portal_batch(crew_id: str):
     failed_count = 0
 
     for item in items_to_verify:
-        result = _build_portal_response(crew_id, item["name"])
+        result = await _build_portal_response(crew_id, item["name"], item.get("docNo", ""))
         _apply_portal_result(crew_id, item, result)
         if result["verified"]:
             verified_count += 1
@@ -986,11 +1292,12 @@ async def verify_portal_batch(crew_id: str):
 
     _append_audit(
         crew_id,
-        actor="Portal Verifier",
+        actor=current_user["fullName"],
         action="batch_verification",
         target="Pending documents",
         message=f"Batch verification completed: {verified_count} verified, {failed_count} failed.",
     )
+    persist_state()
 
     return {
         "crewId": crew_id,
@@ -1002,9 +1309,15 @@ async def verify_portal_batch(crew_id: str):
 
 
 @app.post("/api/crew/{crew_id}/self-service/send")
-def send_to_seafarer(crew_id: str, request: SendApprovalRequest, http_request: Request):
+def send_to_seafarer(
+    crew_id: str,
+    request: SendApprovalRequest,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_ADMIN})),
+):
     _find_crew_member(crew_id)
-    packet = _create_self_service_link(crew_id, request.sentBy)
+    packet = _create_self_service_link(crew_id, current_user["fullName"])
+    persist_state()
     return _serialize_self_service_packet(packet, http_request)
 
 
@@ -1044,37 +1357,48 @@ def submit_self_service_packet(token: str, request: SelfServiceSubmitRequest):
         target="Seafarer Confirmation",
         message="Seafarer completed the confirmation checklist.",
     )
-
+    persist_state()
     return _serialize_self_service_packet(packet)
 
 
 @app.post("/api/ai/check/{crew_id}")
-async def run_ai_check(crew_id: str):
+async def run_ai_check(
+    crew_id: str,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
+):
     _find_crew_member(crew_id)
     _recalculate_crew(crew_id)
     narrative = await _generate_ai_narrative(crew_id)
     _append_audit(
         crew_id,
-        actor="AI Compliance Engine",
+        actor=current_user["fullName"],
         action="analysis",
         target="Checklist",
         message="Ran AI compliance analysis against the vessel and rank matrix.",
     )
+    persist_state()
     return _build_ai_check_payload(crew_id, narrative)
 
 
 @app.post("/api/ai/check-batch")
-async def run_ai_check_batch(payload: Dict[str, List[str]]):
+async def run_ai_check_batch(
+    payload: Dict[str, List[str]],
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
+):
     crew_ids = payload.get("crewIds", [])
     results = []
     for crew_id in crew_ids:
         if any(item["id"] == crew_id for item in STATE["crew"]):
-            results.append(await run_ai_check(crew_id))
+            results.append(await run_ai_check(crew_id, current_user))
     return {"results": results}
 
 
 @app.get("/api/crew/{crew_id}/report")
-def get_crew_report(crew_id: str, request: Request):
+def get_crew_report(
+    crew_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_user()),
+):
     _find_crew_member(crew_id)
     return {
         "matrix": {
@@ -1089,12 +1413,14 @@ def get_crew_report(crew_id: str, request: Request):
 
 
 @app.post("/api/reset-demo-data")
-def reset_demo():
+def reset_demo(current_user: Dict[str, Any] = Depends(require_user({ROLE_ADMIN}))):
     reset_demo_state()
     return {"ok": True}
 
-
-reset_demo_state()
+init_database(DEFAULT_STATE, SEED_USERS)
+STATE.update(load_state())
+if not STATE.get("audit_logs"):
+    reset_demo_state()
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 assets_dir = os.path.join(static_dir, "assets")

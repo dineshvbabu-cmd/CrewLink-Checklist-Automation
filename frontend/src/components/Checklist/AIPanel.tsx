@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Bot, ChevronDown, ChevronUp, Download, RefreshCw } from 'lucide-react'
-import type { AICheckResult } from '../../types'
+import type { AICheckResult, IntegrationStatus } from '../../types'
 import TrafficLight from '../Common/TrafficLight'
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
   loading: boolean
   portalRunning: boolean
   portalSummary: string | null
+  integrationStatus: IntegrationStatus | null
   crewName: string
   rank: string
   onRunCheck: () => void
@@ -46,6 +47,7 @@ export default function AIPanel({
   loading,
   portalRunning,
   portalSummary,
+  integrationStatus,
   crewName,
   rank,
   onRunCheck,
@@ -133,6 +135,20 @@ export default function AIPanel({
                   </div>
                 </div>
               </div>
+
+              {integrationStatus && (
+                <div className="mt-3 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 flex flex-wrap gap-3">
+                  <span>
+                    Portal mode: <strong>{integrationStatus.portal.mode}</strong>
+                  </span>
+                  <span>
+                    Provider: <strong>{integrationStatus.portal.provider}</strong>
+                  </span>
+                  <span>
+                    Storage: <strong>{integrationStatus.storage.databasePath}</strong>
+                  </span>
+                </div>
+              )}
 
               {portalSummary && (
                 <div className="mt-3 rounded border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">

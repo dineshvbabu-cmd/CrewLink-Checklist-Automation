@@ -10,8 +10,15 @@ def setup_function():
     reset_demo_state()
 
 
+def auth_headers(username: str = "admin", password: str = "CrewlinkAdmin!23") -> dict[str, str]:
+    response = client.post("/api/auth/login", json={"username": username, "password": password})
+    assert response.status_code == 200
+    token = response.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_ai_check_returns_matrix_driven_summary():
-    response = client.post("/api/ai/check/c002")
+    response = client.post("/api/ai/check/c002", headers=auth_headers("rc", "CrewlinkRC!23"))
     assert response.status_code == 200
     data = response.json()
     assert data["overallStatus"] == "red"
@@ -20,36 +27,41 @@ def test_ai_check_returns_matrix_driven_summary():
 
 
 def test_batch_portal_verification_resolves_pending_documents():
-    before = client.get("/api/crew/c003/documents").json()
+    headers = auth_headers("ops", "CrewlinkOps!23")
+    before = client.get("/api/crew/c003/documents", headers=headers).json()
     assert before["summary"]["pendingVerification"] == 3
 
-    batch = client.post("/api/crew/c003/verify-portal-batch")
+    batch = client.post("/api/crew/c003/verify-portal-batch", headers=headers)
     assert batch.status_code == 200
     assert batch.json()["verifiedCount"] == 3
 
-    after = client.get("/api/crew/c003/documents").json()
+    after = client.get("/api/crew/c003/documents", headers=headers).json()
     assert after["summary"]["pendingVerification"] == 0
 
-    ai = client.post("/api/ai/check/c003").json()
+    ai = client.post("/api/ai/check/c003", headers=headers).json()
     assert ai["overallStatus"] == "green"
 
 
 def test_remark_and_override_are_logged():
+    rc_headers = auth_headers("rc", "CrewlinkRC!23")
     remark = client.post(
         "/api/crew/c002/documents/6/remark",
         json={"remark": "OPS approved temporary handling", "actor": "Shital Patil"},
+        headers=rc_headers,
     )
     assert remark.status_code == 200
     assert remark.json()["item"]["remark"] == "OPS approved temporary handling"
 
+    ops_headers = auth_headers("ops", "CrewlinkOps!23")
     override = client.post(
         "/api/crew/c002/documents/6/override",
         json={"status": "green", "reason": "Temporary flag waiver approved", "actor": "Shital Patil"},
+        headers=ops_headers,
     )
     assert override.status_code == 200
     assert override.json()["item"]["aiStatus"] == "green"
 
-    audit = client.get("/api/crew/c002/audit-log").json()
+    audit = client.get("/api/crew/c002/audit-log", headers=ops_headers).json()
     assert any(entry["action"] == "override" for entry in audit)
 
 
@@ -58,6 +70,7 @@ def test_self_service_submission_updates_confirmation():
         "/api/crew/c002/self-service/send",
         json={"sentBy": "RC Team"},
         headers={
+            **auth_headers("rc", "CrewlinkRC!23"),
             "x-forwarded-proto": "https",
             "x-forwarded-host": "crewlink-checklist-automation-production.up.railway.app",
         },
@@ -86,13 +99,16 @@ def test_self_service_submission_updates_confirmation():
     assert submit.status_code == 200
     assert submit.json()["status"] == "submitted"
 
-    confirmation = client.get("/api/crew/c002/confirmation").json()
+    confirmation = client.get(
+        "/api/crew/c002/confirmation",
+        headers=auth_headers("ops", "CrewlinkOps!23"),
+    ).json()
     assert confirmation[0]["verifyCrew"] is True
     assert confirmation[1]["seafarerRemark"] == "Need updated flag document"
 
 
 def test_export_pdf_returns_pdf_document():
-    response = client.get("/api/crew/c001/export-checklist")
+    response = client.get("/api/crew/c001/export-checklist", headers=auth_headers())
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert len(response.content) > 500

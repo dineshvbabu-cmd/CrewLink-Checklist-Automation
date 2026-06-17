@@ -164,3 +164,16 @@ a {
     linear-gradient(135deg, rgba(26, 42, 74, 0.98), rgba(39, 72, 120, 0.96)),
     radial-gradient(circle at right top, rgba(255, 255, 255, 0.12), transparent 30%);
 }
+
+.login-shell {
+  background:
+    radial-gradient(circle at top left, rgba(13, 148, 136, 0.12), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.12), transparent 28%),
+    linear-gradient(140deg, #e8f1f5 0%, #f8fafc 52%, #edf2f7 100%);
+}
+
+.login-hero {
+  background:
+    linear-gradient(160deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.94)),
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.18), transparent 34%);
+}

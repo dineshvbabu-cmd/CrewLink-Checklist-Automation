@@ -6,9 +6,10 @@ interface Props {
   sending: boolean
   latestLink: SelfServicePacket | null
   onSend: () => void
+  canSend: boolean
 }
 
-export default function SeafarerConfirmationTab({ items, sending, latestLink, onSend }: Props) {
+export default function SeafarerConfirmationTab({ items, sending, latestLink, onSend, canSend }: Props) {
   return (
     <div>
       <div className="px-4 py-3" style={{ backgroundColor: '#f7fafd', borderBottom: '1px solid #dde3ec' }}>
@@ -18,10 +19,11 @@ export default function SeafarerConfirmationTab({ items, sending, latestLink, on
           </p>
           <button
             onClick={onSend}
+            disabled={!canSend || sending}
             style={{ backgroundColor: '#c0392b', color: 'white', border: 'none', borderRadius: 4, padding: '7px 16px', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
           >
             <Send size={13} />
-            {sending ? 'Sending...' : 'Send to seafarer for approval'}
+            {sending ? 'Sending...' : canSend ? 'Send to seafarer for approval' : 'RC/Admin required'}
           </button>
         </div>
 
@@ -59,7 +61,7 @@ export default function SeafarerConfirmationTab({ items, sending, latestLink, on
                 <td className="text-center text-gray-500">{item.srNo}</td>
                 <td>{item.description}</td>
                 <td className="text-center">
-                  {item.verifyOps ? <span className="tick-verified">✓</span> : <span className="text-gray-300 text-xs">Pending</span>}
+                  {item.verifyOps ? <span className="tick-verified">OK</span> : <span className="text-gray-300 text-xs">Pending</span>}
                 </td>
                 <td>
                   {item.officeRemark ? (
@@ -69,7 +71,7 @@ export default function SeafarerConfirmationTab({ items, sending, latestLink, on
                   )}
                 </td>
                 <td className="text-center">
-                  {item.verifyCrew ? <span className="tick-verified">✓</span> : <span className="text-gray-300 text-xs">Awaiting</span>}
+                  {item.verifyCrew ? <span className="tick-verified">OK</span> : <span className="text-gray-300 text-xs">Awaiting</span>}
                 </td>
                 <td>
                   {item.seafarerRemark ? (

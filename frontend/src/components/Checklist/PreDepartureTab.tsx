@@ -7,20 +7,30 @@ interface Props {
   data: DocumentsData
   approvedBy?: string
   verifyingDoc: string | null
+  uploadingSrNo: number | null
   verificationResults: Record<string, PortalVerificationResult>
   onVerifyDocument: (docName: string, docNo: string) => void
-  onEditRemark: (srNo: number, currentRemark: string) => void
-  onOverride: (srNo: number, currentStatus: 'green' | 'yellow' | 'red') => void
+  onRequestRemarkEdit: (srNo: number, name: string, currentRemark: string) => void
+  onRequestOverride: (srNo: number, name: string, currentStatus: 'green' | 'yellow' | 'red') => void
+  onUploadAttachment: (srNo: number, file: File) => void
+  canEditRemark: boolean
+  canOverride: boolean
+  canUpload: boolean
 }
 
 export default function PreDepartureTab({
   data,
   approvedBy,
   verifyingDoc,
+  uploadingSrNo,
   verificationResults,
   onVerifyDocument,
-  onEditRemark,
-  onOverride,
+  onRequestRemarkEdit,
+  onRequestOverride,
+  onUploadAttachment,
+  canEditRemark,
+  canOverride,
+  canUpload,
 }: Props) {
   let srCounter = 0
 
@@ -44,11 +54,11 @@ export default function PreDepartureTab({
               <th style={{ width: 80 }}>Type</th>
               <th style={{ width: 95 }}>Issue Date</th>
               <th style={{ width: 95 }}>Expiry Date</th>
-              <th style={{ width: 35 }}>Att.</th>
+              <th style={{ width: 80 }}>Att.</th>
               <th style={{ width: 75 }}>Verify (RC)</th>
               <th style={{ width: 110 }}>Verify (Ops)</th>
               <th style={{ width: 55 }}>AI</th>
-              <th style={{ minWidth: 180 }}>Remarks / Action</th>
+              <th style={{ minWidth: 210 }}>Remarks / Action</th>
             </tr>
           </thead>
           <tbody>
@@ -82,15 +92,34 @@ export default function PreDepartureTab({
                         {item.expiryDate || '-'}
                       </td>
                       <td className="text-center">
-                        {!isMissing && item.attachmentUrl && (
-                          <a href={item.attachmentUrl} target="_blank" rel="noreferrer" title="View attachment">
-                            <Paperclip size={13} style={{ color: '#2980b9', cursor: 'pointer' }} />
-                          </a>
-                        )}
+                        <div className="flex items-center justify-center gap-2">
+                          {!isMissing && item.attachmentUrl && (
+                            <a href={item.attachmentUrl} target="_blank" rel="noreferrer" title={item.attachmentName || 'View attachment'}>
+                              <Paperclip size={13} style={{ color: '#2980b9', cursor: 'pointer' }} />
+                            </a>
+                          )}
+                          {!isMissing && canUpload && (
+                            <label className="link-blue text-[10px] cursor-pointer">
+                              {uploadingSrNo === item.srNo ? 'Uploading...' : 'Upload'}
+                              <input
+                                type="file"
+                                className="hidden"
+                                disabled={uploadingSrNo === item.srNo}
+                                onChange={event => {
+                                  const file = event.target.files?.[0]
+                                  if (file) {
+                                    onUploadAttachment(item.srNo, file)
+                                  }
+                                  event.target.value = ''
+                                }}
+                              />
+                            </label>
+                          )}
+                        </div>
                       </td>
                       <td className="text-center">
                         {item.verifiedRC && !isMissing ? (
-                          <span className="tick-verified" title="RC Verified">✓</span>
+                          <span className="tick-verified" title="RC Verified">OK</span>
                         ) : (
                           <span className="text-gray-300 text-xs">-</span>
                         )}
@@ -99,7 +128,7 @@ export default function PreDepartureTab({
                         {isMissing ? (
                           <span className="text-gray-400 text-xs">-</span>
                         ) : item.verifiedOps ? (
-                          <span className="tick-verified" title="Ops Verified">✓</span>
+                          <span className="tick-verified" title="Ops Verified">OK</span>
                         ) : verifyResult ? (
                           <div>
                             <span
@@ -142,11 +171,19 @@ export default function PreDepartureTab({
                             <span className="text-xs text-gray-400 italic">No remark</span>
                           )}
                           <div className="flex gap-2 flex-wrap">
-                            <button className="link-blue text-xs" onClick={() => onEditRemark(item.srNo, item.remark)}>
-                              {item.remark ? 'Edit Remark' : 'Enter Remark'}
-                            </button>
-                            {(item.aiStatus === 'red' || item.aiStatus === 'yellow') && (
-                              <button className="link-blue text-xs" onClick={() => onOverride(item.srNo, item.aiStatus)}>
+                            {canEditRemark && (
+                              <button
+                                className="link-blue text-xs"
+                                onClick={() => onRequestRemarkEdit(item.srNo, item.name, item.remark)}
+                              >
+                                {item.remark ? 'Edit Remark' : 'Enter Remark'}
+                              </button>
+                            )}
+                            {canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow') && (
+                              <button
+                                className="link-blue text-xs"
+                                onClick={() => onRequestOverride(item.srNo, item.name, item.aiStatus)}
+                              >
                                 Override AI
                               </button>
                             )}

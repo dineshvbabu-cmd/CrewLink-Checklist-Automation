@@ -7,6 +7,7 @@ __pycache__/
 .env.local
 .env.*.local
 backend/static/
+backend/storage/
 *.egg-info/
 .venv/
 venv/
