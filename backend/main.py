@@ -9,7 +9,7 @@ import os
 import secrets
 
 import anthropic
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -719,10 +719,36 @@ def _get_latest_link(crew_id: str) -> Optional[Dict[str, Any]]:
     return STATE["self_service_links"].get(token)
 
 
+def _resolve_public_base_url(request: Optional[Request] = None) -> str:
+    explicit_url = os.environ.get("PUBLIC_APP_URL") or os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if explicit_url:
+        normalized = explicit_url.rstrip("/")
+        if normalized.startswith("http://") or normalized.startswith("https://"):
+            return normalized
+        return f"https://{normalized}"
+
+    if request is not None:
+        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        if forwarded_host:
+            return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+        return str(request.base_url).rstrip("/")
+
+    return "http://localhost:8000"
+
+
+def _serialize_self_service_packet(packet: Optional[Dict[str, Any]], request: Optional[Request] = None) -> Optional[Dict[str, Any]]:
+    if packet is None:
+        return None
+
+    payload = deepcopy(packet)
+    payload["url"] = f"{_resolve_public_base_url(request)}/approval/{packet['token']}"
+    return payload
+
+
 def _create_self_service_link(crew_id: str, sent_by: str) -> Dict[str, Any]:
     crew = _find_crew_member(crew_id)
     token = secrets.token_urlsafe(10)
-    public_base = os.environ.get("PUBLIC_APP_URL", "http://localhost:8000").rstrip("/")
     packet = {
         "token": token,
         "crewId": crew_id,
@@ -731,7 +757,6 @@ def _create_self_service_link(crew_id: str, sent_by: str) -> Dict[str, Any]:
         "status": "sent",
         "sentAt": now_stamp(),
         "sentBy": sent_by,
-        "url": f"{public_base}/approval/{token}",
         "items": deepcopy(STATE["confirmation"][crew_id]),
     }
     STATE["self_service_links"][token] = packet
@@ -858,9 +883,9 @@ def get_extraction(crew_id: str):
 
 
 @app.get("/api/crew/{crew_id}/self-service/latest")
-def get_latest_self_service_link(crew_id: str):
+def get_latest_self_service_link(crew_id: str, request: Request):
     _find_crew_member(crew_id)
-    return _get_latest_link(crew_id)
+    return _serialize_self_service_packet(_get_latest_link(crew_id), request)
 
 
 @app.get("/api/crew/{crew_id}/export-checklist")
@@ -977,18 +1002,18 @@ async def verify_portal_batch(crew_id: str):
 
 
 @app.post("/api/crew/{crew_id}/self-service/send")
-def send_to_seafarer(crew_id: str, request: SendApprovalRequest):
+def send_to_seafarer(crew_id: str, request: SendApprovalRequest, http_request: Request):
     _find_crew_member(crew_id)
     packet = _create_self_service_link(crew_id, request.sentBy)
-    return packet
+    return _serialize_self_service_packet(packet, http_request)
 
 
 @app.get("/api/self-service/{token}")
-def get_self_service_packet(token: str):
+def get_self_service_packet(token: str, request: Request):
     packet = STATE["self_service_links"].get(token)
     if not packet:
         raise HTTPException(status_code=404, detail="Approval link not found")
-    return packet
+    return _serialize_self_service_packet(packet, request)
 
 
 @app.post("/api/self-service/{token}/submit")
@@ -1020,7 +1045,7 @@ def submit_self_service_packet(token: str, request: SelfServiceSubmitRequest):
         message="Seafarer completed the confirmation checklist.",
     )
 
-    return packet
+    return _serialize_self_service_packet(packet)
 
 
 @app.post("/api/ai/check/{crew_id}")
@@ -1049,7 +1074,7 @@ async def run_ai_check_batch(payload: Dict[str, List[str]]):
 
 
 @app.get("/api/crew/{crew_id}/report")
-def get_crew_report(crew_id: str):
+def get_crew_report(crew_id: str, request: Request):
     _find_crew_member(crew_id)
     return {
         "matrix": {
@@ -1058,7 +1083,7 @@ def get_crew_report(crew_id: str):
         },
         "extraction": _build_extraction_report(crew_id),
         "auditLog": STATE["audit_logs"][crew_id][:10],
-        "latestSelfServiceLink": _get_latest_link(crew_id),
+        "latestSelfServiceLink": _serialize_self_service_packet(_get_latest_link(crew_id), request),
         "learningFeedbackCount": len(STATE["learning_feedback"][crew_id]),
     }
 

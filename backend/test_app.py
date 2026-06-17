@@ -54,9 +54,20 @@ def test_remark_and_override_are_logged():
 
 
 def test_self_service_submission_updates_confirmation():
-    sent = client.post("/api/crew/c002/self-service/send", json={"sentBy": "RC Team"})
+    sent = client.post(
+        "/api/crew/c002/self-service/send",
+        json={"sentBy": "RC Team"},
+        headers={
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "crewlink-checklist-automation-production.up.railway.app",
+        },
+    )
     assert sent.status_code == 200
     token = sent.json()["token"]
+    assert sent.json()["url"] == (
+        "https://crewlink-checklist-automation-production.up.railway.app"
+        f"/approval/{token}"
+    )
 
     packet = client.get(f"/api/self-service/{token}")
     assert packet.status_code == 200

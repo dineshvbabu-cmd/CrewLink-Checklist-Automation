@@ -12,10 +12,21 @@ const PLACEHOLDER_TAB_COPY: Record<string, string> = {
   'Brazil Cabotage': 'Brazil cabotage rules and supporting fields can be layered in later without changing the current AI compliance flow.',
 }
 
+const FILTER_SEQUENCE = ['all', 'red', 'yellow', 'green'] as const
+type StatusFilter = (typeof FILTER_SEQUENCE)[number]
+
+const FILTER_LABELS: Record<StatusFilter, string> = {
+  all: 'All',
+  red: 'Action Req.',
+  yellow: 'Pending',
+  green: 'Clear',
+}
+
 export default function CrewListPage() {
   const [vessel, setVessel] = useState<Vessel | null>(null)
   const [crew, setCrew] = useState<CrewMember[]>([])
   const [activeTab, setActiveTab] = useState('Crew List')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedMember, setSelectedMember] = useState<CrewMember | null>(null)
   const [aiLoadingId, setAiLoadingId] = useState<string | null>(null)
@@ -25,15 +36,27 @@ export default function CrewListPage() {
   const [runningSelected, setRunningSelected] = useState(false)
   const [lastRunTime, setLastRunTime] = useState<string | null>(null)
 
+  const loadData = async () => {
+    const [vesselData, crewData] = await Promise.all([getVessel(), getCrew()])
+    setVessel(vesselData)
+    setCrew(crewData)
+    setSelectedIds(previous => {
+      if (previous.size === 0) {
+        return new Set(crewData.filter(member => member.status === 'planned').map(member => member.id))
+      }
+      return new Set(crewData.filter(member => previous.has(member.id)).map(member => member.id))
+    })
+  }
+
   useEffect(() => {
-    Promise.all([getVessel(), getCrew()])
-      .then(([vesselData, crewData]) => {
-        setVessel(vesselData)
-        setCrew(crewData)
-        setSelectedIds(new Set(crewData.filter(member => member.status === 'planned').map(member => member.id)))
-      })
+    loadData()
       .finally(() => setLoading(false))
   }, [])
+
+  const visibleCrew = useMemo(
+    () => (statusFilter === 'all' ? crew : crew.filter(member => member.aiStatus === statusFilter)),
+    [crew, statusFilter],
+  )
 
   const selectedCrew = useMemo(
     () => crew.filter(member => selectedIds.has(member.id)),
@@ -106,7 +129,49 @@ export default function CrewListPage() {
   }
 
   const handleToggleSelectAll = (checked: boolean) => {
-    setSelectedIds(checked ? new Set(crew.map(member => member.id)) : new Set())
+    setSelectedIds(checked ? new Set(visibleCrew.map(member => member.id)) : new Set())
+  }
+
+  const handleCycleFilter = () => {
+    setStatusFilter(previous => FILTER_SEQUENCE[(FILTER_SEQUENCE.indexOf(previous) + 1) % FILTER_SEQUENCE.length])
+  }
+
+  const handleRefresh = async () => {
+    setLoading(true)
+    try {
+      await loadData()
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleExport = () => {
+    const rows = [
+      ['Sr No', 'Rank', 'Name', 'Emp No', 'Nationality', 'Travel Date', 'Sign On Date', 'Relief Due', 'AI Status'],
+      ...visibleCrew.map(member => [
+        String(member.srNo),
+        member.rank,
+        member.name,
+        member.empNo,
+        member.nationality,
+        member.travelDate,
+        member.signOnDate,
+        member.reliefDue,
+        member.aiStatus,
+      ]),
+    ]
+
+    const csv = rows
+      .map(row => row.map(value => `"${value.replace(/"/g, '""')}"`).join(','))
+      .join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `crewlink-checklist-${statusFilter}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   if (loading || !vessel) {
@@ -150,15 +215,24 @@ export default function CrewListPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              <button className="flex items-center gap-1 text-xs text-gray-500 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50">
+              <button
+                onClick={handleCycleFilter}
+                className="flex items-center gap-1 text-xs text-gray-500 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50"
+              >
                 <Filter size={12} />
-                Filter
+                Filter: {FILTER_LABELS[statusFilter]}
               </button>
-              <button className="flex items-center gap-1 text-xs text-gray-500 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50">
+              <button
+                onClick={() => void handleRefresh()}
+                className="flex items-center gap-1 text-xs text-gray-500 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50"
+              >
                 <RefreshCw size={12} />
                 Refresh
               </button>
-              <button className="flex items-center gap-1 text-xs text-gray-500 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50">
+              <button
+                onClick={handleExport}
+                className="flex items-center gap-1 text-xs text-gray-500 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50"
+              >
                 <Download size={12} />
                 Export
               </button>
@@ -167,7 +241,7 @@ export default function CrewListPage() {
 
           <div className="bg-white m-3 rounded shadow-sm overflow-hidden border border-gray-200">
             <CrewTable
-              crew={crew}
+              crew={visibleCrew}
               selectedIds={selectedIds}
               onToggleSelect={handleToggleSelect}
               onToggleSelectAll={handleToggleSelectAll}

@@ -46,6 +46,8 @@ function ThreeDotMenu({ member, onSelect }: { member: CrewMember; onSelect: (ite
     <div ref={ref} className="relative inline-block">
       <button
         onClick={() => setOpen(current => !current)}
+        aria-label="More actions"
+        title="More actions"
         className="p-1 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700"
       >
         <MoreVertical size={15} />
@@ -132,7 +134,7 @@ export default function CrewTable({
             <th style={{ width: 95 }}>Relief Due</th>
             <th style={{ minWidth: 170 }}>Reliever - Rank : Name</th>
             <th style={{ width: 110, backgroundColor: '#1e3a8a' }}>AI Compliance</th>
-            <th style={{ width: 45 }} />
+            <th style={{ width: 130 }}>Checklist</th>
           </tr>
         </thead>
         <tbody>
@@ -164,6 +166,7 @@ export default function CrewTable({
                   )}
                   <button
                     onClick={() => navigate(`/seafarer/${member.id}`)}
+                    title="Open seafarer profile"
                     className="text-blue-600 hover:underline font-medium text-left"
                     style={{ color: '#2980b9' }}
                   >
@@ -226,7 +229,15 @@ export default function CrewTable({
                 )}
               </td>
               <td className="text-center">
-                <ThreeDotMenu member={member} onSelect={item => handleMenuSelect(item, member)} />
+                <div className="flex items-center justify-center gap-1.5">
+                  <button
+                    onClick={() => onOpenChecklist(member)}
+                    className="rounded border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    Checklist
+                  </button>
+                  <ThreeDotMenu member={member} onSelect={item => handleMenuSelect(item, member)} />
+                </div>
               </td>
             </tr>
           ))}
