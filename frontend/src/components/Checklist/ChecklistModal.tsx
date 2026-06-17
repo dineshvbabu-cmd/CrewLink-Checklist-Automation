@@ -91,12 +91,12 @@ export default function ChecklistModal({ member, onClose }: Props) {
   const [sendingLink, setSendingLink] = useState(false)
   const [savingEditor, setSavingEditor] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [remarkEditor, setRemarkEditor] = useState<{ srNo: number; name: string; value: string } | null>(null)
-  const [overrideEditor, setOverrideEditor] = useState<{
+  const [inlineEditor, setInlineEditor] = useState<{
     srNo: number
     name: string
-    status: 'green' | 'yellow' | 'red'
-    reason: string
+    remarkValue: string
+    overrideStatus: 'green' | 'yellow' | 'red'
+    overrideReason: string
   } | null>(null)
   const [confirmationEditor, setConfirmationEditor] = useState<{
     srNo: number
@@ -196,13 +196,12 @@ export default function ChecklistModal({ member, onClose }: Props) {
   }
 
   const handleSaveRemark = async () => {
-    if (!remarkEditor) {
+    if (!inlineEditor) {
       return
     }
     setSavingEditor(true)
     try {
-      await updateDocumentRemark(member.id, remarkEditor.srNo, remarkEditor.value, user?.fullName ?? 'RC Team')
-      setRemarkEditor(null)
+      await updateDocumentRemark(member.id, inlineEditor.srNo, inlineEditor.remarkValue, user?.fullName ?? 'RC Team')
       await Promise.all([refreshCoreData(), refreshSideData()])
       setInfoMessage('Remark saved and added to the audit trail.')
     } finally {
@@ -211,19 +210,18 @@ export default function ChecklistModal({ member, onClose }: Props) {
   }
 
   const handleSaveOverride = async () => {
-    if (!overrideEditor) {
+    if (!inlineEditor) {
       return
     }
     setSavingEditor(true)
     try {
       await overrideDocumentStatus(
         member.id,
-        overrideEditor.srNo,
-        overrideEditor.status,
-        overrideEditor.reason,
+        inlineEditor.srNo,
+        inlineEditor.overrideStatus,
+        inlineEditor.overrideReason,
         user?.fullName ?? 'Ops Team',
       )
-      setOverrideEditor(null)
       await handleAICheck()
       setInfoMessage('AI override recorded for learning feedback and audit.')
     } finally {
@@ -279,8 +277,7 @@ export default function ChecklistModal({ member, onClose }: Props) {
   }
 
   const closeEditors = () => {
-    setRemarkEditor(null)
-    setOverrideEditor(null)
+    setInlineEditor(null)
     setConfirmationEditor(null)
   }
 
@@ -371,87 +368,33 @@ export default function ChecklistModal({ member, onClose }: Props) {
                 </div>
               )}
 
-              {(remarkEditor || overrideEditor || confirmationEditor) && (
+              {confirmationEditor && (
                 <div className="rounded border border-slate-200 bg-slate-50 p-4">
-                  {remarkEditor && (
-                    <div className="grid gap-3">
-                      <div className="text-sm font-semibold text-slate-900">Update Remark</div>
-                      <div className="text-xs text-slate-500">{remarkEditor.name}</div>
-                      <textarea
-                        value={remarkEditor.value}
-                        onChange={event => setRemarkEditor({ ...remarkEditor, value: event.target.value })}
-                        rows={4}
-                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                  <div className="grid gap-3">
+                    <div className="text-sm font-semibold text-slate-900">Update Departure Ops Item</div>
+                    <div className="text-xs text-slate-500">{confirmationEditor.description}</div>
+                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={confirmationEditor.verifyOps}
+                        onChange={event => setConfirmationEditor({ ...confirmationEditor, verifyOps: event.target.checked })}
                       />
-                      <div className="flex justify-end gap-2">
-                        <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
-                        <button className="rounded bg-slate-900 px-3 py-2 text-sm text-white" disabled={savingEditor} onClick={() => void handleSaveRemark()}>
-                          {savingEditor ? 'Saving...' : 'Save Remark'}
-                        </button>
-                      </div>
+                      Mark as verified by Ops
+                    </label>
+                    <textarea
+                      value={confirmationEditor.officeRemark}
+                      onChange={event => setConfirmationEditor({ ...confirmationEditor, officeRemark: event.target.value })}
+                      rows={4}
+                      placeholder="Add Ops remarks"
+                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
+                      <button className="rounded bg-slate-900 px-3 py-2 text-sm text-white" disabled={savingEditor} onClick={() => void handleSaveConfirmation()}>
+                        {savingEditor ? 'Saving...' : 'Save Ops Update'}
+                      </button>
                     </div>
-                  )}
-
-                  {overrideEditor && (
-                    <div className="grid gap-3">
-                      <div className="text-sm font-semibold text-slate-900">Override AI Status</div>
-                      <div className="text-xs text-slate-500">{overrideEditor.name}</div>
-                      <select
-                        value={overrideEditor.status}
-                        onChange={event => setOverrideEditor({ ...overrideEditor, status: event.target.value as 'green' | 'yellow' | 'red' })}
-                        className="rounded border border-slate-300 px-3 py-2 text-sm"
-                      >
-                        <option value="green">Green</option>
-                        <option value="yellow">Yellow</option>
-                        <option value="red">Red</option>
-                      </select>
-                      <textarea
-                        value={overrideEditor.reason}
-                        onChange={event => setOverrideEditor({ ...overrideEditor, reason: event.target.value })}
-                        rows={4}
-                        placeholder="Explain why the AI status is being overridden"
-                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                      />
-                      <div className="flex justify-end gap-2">
-                        <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
-                        <button
-                          className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
-                          disabled={savingEditor || !overrideEditor.reason.trim()}
-                          onClick={() => void handleSaveOverride()}
-                        >
-                          {savingEditor ? 'Saving...' : 'Save Override'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {confirmationEditor && (
-                    <div className="grid gap-3">
-                      <div className="text-sm font-semibold text-slate-900">Update Departure Ops Item</div>
-                      <div className="text-xs text-slate-500">{confirmationEditor.description}</div>
-                      <label className="flex items-center gap-2 text-sm text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={confirmationEditor.verifyOps}
-                          onChange={event => setConfirmationEditor({ ...confirmationEditor, verifyOps: event.target.checked })}
-                        />
-                        Mark as verified by Ops
-                      </label>
-                      <textarea
-                        value={confirmationEditor.officeRemark}
-                        onChange={event => setConfirmationEditor({ ...confirmationEditor, officeRemark: event.target.value })}
-                        rows={4}
-                        placeholder="Add Ops remarks"
-                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                      />
-                      <div className="flex justify-end gap-2">
-                        <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={closeEditors}>Cancel</button>
-                        <button className="rounded bg-slate-900 px-3 py-2 text-sm text-white" disabled={savingEditor} onClick={() => void handleSaveConfirmation()}>
-                          {savingEditor ? 'Saving...' : 'Save Ops Update'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  </div>
                 </div>
               )}
 
@@ -479,16 +422,36 @@ export default function ChecklistModal({ member, onClose }: Props) {
                   approvedBy={activeStatus === 'green' ? 'S. Patil on 17-Jun-2026 10:30' : undefined}
                   verifyingDoc={verifyingDoc}
                   uploadingSrNo={uploadingSrNo}
+                  savingEditor={savingEditor}
                   verificationResults={verificationResults}
                   onVerifyDocument={handleVerifyDocument}
-                  onRequestRemarkEdit={(srNo, name, currentRemark) => {
-                    closeEditors()
-                    setRemarkEditor({ srNo, name, value: currentRemark })
+                  inlineEditor={inlineEditor}
+                  onOpenInlineEditor={({ srNo, name, currentRemark, currentStatus }) => {
+                    setConfirmationEditor(null)
+                    setInlineEditor(current =>
+                      current?.srNo === srNo
+                        ? null
+                        : {
+                            srNo,
+                            name,
+                            remarkValue: currentRemark,
+                            overrideStatus: currentStatus,
+                            overrideReason: '',
+                          },
+                    )
                   }}
-                  onRequestOverride={(srNo, name, currentStatus) => {
-                    closeEditors()
-                    setOverrideEditor({ srNo, name, status: currentStatus, reason: '' })
-                  }}
+                  onCloseInlineEditor={() => setInlineEditor(null)}
+                  onInlineRemarkChange={value =>
+                    setInlineEditor(current => (current ? { ...current, remarkValue: value } : current))
+                  }
+                  onInlineOverrideStatusChange={status =>
+                    setInlineEditor(current => (current ? { ...current, overrideStatus: status } : current))
+                  }
+                  onInlineOverrideReasonChange={value =>
+                    setInlineEditor(current => (current ? { ...current, overrideReason: value } : current))
+                  }
+                  onSaveRemark={() => void handleSaveRemark()}
+                  onSaveOverride={() => void handleSaveOverride()}
                   onUploadAttachment={(srNo, file) => void handleUploadAttachment(srNo, file)}
                   canEditRemark={canEditRemark}
                   canOverride={canOverride}
