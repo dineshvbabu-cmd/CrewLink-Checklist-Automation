@@ -187,3 +187,67 @@ def test_export_pdf_returns_pdf_document():
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert len(response.content) > 500
+
+
+def test_crewlink_checklist_item_marks_ops_review_as_pending():
+    item = main._crewlink_item_from_checklist(
+        1,
+        "flag",
+        {
+            "docname": "Flag CDC I/10",
+            "docNo": "MH 1204609",
+            "type": "I/10",
+            "issueDate": "2026-05-28T00:00:00",
+            "expiryDate": "2031-05-27T00:00:00",
+            "filePath": "https://example.com/flag-cdc.pdf",
+            "remark1": "To be review by OPS",
+            "firstVerification": 1185,
+            "secondVerification": 1185,
+        },
+    )
+
+    assert item["required"] is True
+    assert item["missing"] is False
+    assert item["aiStatus"] == "yellow"
+    assert "review by OPS" in item["remark"]
+
+
+def test_crewlink_checklist_item_skips_not_applicable_placeholder():
+    item = main._crewlink_item_from_checklist(
+        5,
+        "medical",
+        {
+            "docname": "Psychometric Test (PF-16)",
+            "docNo": "NA",
+            "type": "",
+            "issueDate": "1900-01-01T00:00:00",
+            "expiryDate": "1900-01-01T00:00:00",
+            "filePath": "",
+            "remark1": "NA",
+        },
+    )
+
+    assert item["required"] is False
+    assert item["missing"] is False
+    assert item["aiStatus"] == "grey"
+
+
+def test_crewlink_checklist_item_marks_missing_mandatory_course_red():
+    item = main._crewlink_item_from_checklist(
+        12,
+        "course",
+        {
+            "docname": "M : FRAMO Pumps Training",
+            "docNo": "",
+            "type": "Vessel Specific",
+            "issueDate": None,
+            "expiryDate": None,
+            "filePath": None,
+            "remark1": "Will check",
+            "level": "Mandatory",
+        },
+    )
+
+    assert item["required"] is True
+    assert item["missing"] is True
+    assert item["aiStatus"] == "red"

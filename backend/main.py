@@ -460,6 +460,29 @@ DEFAULT_PORTAL_LINKS = {
     "imo_gisis_directory": "https://gisis.imo.org/Public/CP/Browse.aspx?List=CV9&Function=2%20IMO%20Web%20Accounts",
 }
 
+CREWLINK_CONFIRMATION_TEMPLATE = [
+    {"srNo": 1, "description": "Air Ticket, Letter to Immigration, Okay to Board / Letter of Guarantee / Visas (as applicable)", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 2, "description": "Flag Documents / CRA", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 3, "description": "Original Medical Report", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 4, "description": "Original PP and CDC (and any other original seafarer's document kept in office)", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 5, "description": "Seafarer's Employment Agreement", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 6, "description": "Seafarer's Declarations", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 7, "description": "Terms of Employment for Seafarers", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+    {"srNo": 8, "description": "Working Gear", "verifyOps": False, "officeRemark": "", "verifyCrew": False, "seafarerRemark": ""},
+]
+
+CREWLINK_RANK_ALIASES = {
+    "MST": "MST",
+    "MASTER": "MST",
+    "CO": "CO",
+    "CHIEF OFFICER": "CO",
+    "2O": "CO",
+    "C/O": "CO",
+    "A3O": "A3O",
+    "3O": "A3O",
+    "3/O": "A3O",
+}
+
 
 def _clone_document_bundle(template_crew_id: str, replacements: Dict[str, str]) -> Dict[str, Any]:
     bundle = deepcopy(BASE_DOCUMENTS[template_crew_id])
@@ -561,6 +584,13 @@ class PortalVerifyRequest(BaseModel):
     issueAuthority: Optional[str] = None
 
 
+class CrewlinkImportRequest(BaseModel):
+    vesselId: Optional[int] = None
+    crewIds: Optional[List[int]] = None
+    maxCrew: Optional[int] = None
+    replaceState: bool = True
+
+
 class RemarkRequest(BaseModel):
     remark: str
     actor: str = "RC Officer"
@@ -660,6 +690,21 @@ def _portal_links() -> Dict[str, str]:
         "dg_shipping_coc": os.environ.get("DG_SHIPPING_COC_CHECKER_URL", DEFAULT_PORTAL_LINKS["dg_shipping_coc"]).strip(),
         "dg_shipping_indos": os.environ.get("DG_SHIPPING_INDOS_CHECKER_URL", DEFAULT_PORTAL_LINKS["dg_shipping_indos"]).strip(),
         "imo_gisis_directory": os.environ.get("IMO_GISIS_CERTIFICATE_DIRECTORY_URL", DEFAULT_PORTAL_LINKS["imo_gisis_directory"]).strip(),
+    }
+
+
+def _crewlink_configuration() -> Dict[str, Any]:
+    token = os.environ.get("CREWLINK_API_TOKEN", "").strip()
+    api_base = os.environ.get("CREWLINK_API_BASE_URL", "https://api.crewlinkasm.com/api").rstrip("/")
+    web_base = os.environ.get("CREWLINK_WEB_BASE_URL", "https://www.crewlinkasm.com").rstrip("/")
+    vessel_id = os.environ.get("CREWLINK_VESSEL_ID", "").strip()
+    return {
+        "configured": bool(token),
+        "apiBaseUrl": api_base,
+        "webBaseUrl": web_base,
+        "vesselId": int(vessel_id) if vessel_id.isdigit() else None,
+        "hasToken": bool(token),
+        "token": token,
     }
 
 
@@ -809,6 +854,644 @@ def _crew_portal_profile(crew_id: str) -> Dict[str, str]:
         "passportNo": passport_no,
         "nationality": crew.get("nationality", ""),
         "crewName": crew.get("name", ""),
+    }
+
+
+def _format_date_display(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    parsed = _parse_display_date(text)
+    if parsed:
+        return parsed.strftime("%d-%b-%Y")
+    normalized = text.replace(".000Z", "")
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(normalized, fmt).strftime("%d-%b-%Y")
+        except ValueError:
+            continue
+    return text
+
+
+def _normalized_rank_for_matrix(rank_code: str, rank_name: str = "") -> str:
+    candidate = (rank_code or rank_name or "").strip().upper()
+    return CREWLINK_RANK_ALIASES.get(candidate, candidate)
+
+
+def _doc_type_from_name(name: str) -> str:
+    lowered = name.lower()
+    if "passport" in lowered or "cdc" in lowered or "indos" in lowered:
+        return "Travel"
+    if "gmdss" in lowered:
+        return "IV/2"
+    if "competency" in lowered or "watch" in lowered:
+        return "II/2"
+    return "Imported"
+
+
+CREWLINK_CHECKLIST_SECTIONS = [
+    ("Travel Documents", "travel", "Checklist/chkOnSelTravel"),
+    ("National Licenses", "license", "Checklist/chkOnSelLic"),
+    ("Flag State Endorsements", "flag", "Checklist/chkOnSelFlagLic"),
+    ("STCW Courses", "course", "Checklist/chkOnSelCourse"),
+    ("Other Documents / Pre-joining Docs", "other", "Checklist/chkOnSelOther"),
+    ("Medical", "medical", "Checklist/chkOnSelMedical"),
+]
+
+
+def _crewlink_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    return bool(text and text.lower() not in {"na", "n/a", "nil", "null"})
+
+
+def _crewlink_checklist_name(raw_name: str) -> str:
+    cleaned = re.sub(r"^[A-Z]\s*:\s*", "", (raw_name or "").strip())
+    replacements = {
+        "INDos No": "INDoS Number",
+        "Medical Decalration": "Medical Declaration",
+        "Yellow fever Cert": "Yellow Fever Certificate",
+    }
+    return replacements.get(cleaned, cleaned or "Imported Checklist Item")
+
+
+def _crewlink_is_expired(value: Any) -> bool:
+    if not value:
+        return False
+    normalized = str(value).strip()
+    if not normalized or normalized.startswith("1900-01-01"):
+        return False
+    display = _format_date_display(normalized)
+    parsed = _parse_display_date(display)
+    return bool(parsed and parsed.date() < datetime.now(UTC).date())
+
+
+def _crewlink_requires_attention(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(
+        marker in lowered
+        for marker in (
+            "review",
+            "pending",
+            "will check",
+            "await",
+            "waiver",
+            "ops",
+            "retry",
+            "manual",
+        )
+    )
+
+
+def _crewlink_effective_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw or raw.startswith("1900-01-01"):
+        return ""
+    return _format_date_display(raw)
+
+
+def _crewlink_item(
+    sr_no: int,
+    name: str,
+    doc_no: str = "",
+    issue_date: str = "",
+    expiry_date: str = "NA",
+    verified: bool = True,
+    remark: str = "",
+    missing: bool = False,
+    attachment_url: str = "",
+    type_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    status: AIStatus = "red" if missing else ("green" if verified else "yellow")
+    return {
+        "srNo": sr_no,
+        "name": name,
+        "docNo": doc_no,
+        "type": type_label or _doc_type_from_name(name),
+        "issueDate": issue_date or "",
+        "expiryDate": expiry_date or "NA",
+        "verifiedRC": verified and not missing,
+        "verifiedOps": False,
+        "portalVerified": False,
+        "aiStatus": status,
+        "remark": remark,
+        "missing": missing,
+        "attachmentUrl": attachment_url,
+        "attachmentName": name if attachment_url else "",
+        "overrideStatus": "",
+        "overrideReason": "",
+        "extractionConfidence": 0.98 if verified and not missing else 0.72,
+    }
+
+
+async def _crewlink_get_json(client: httpx.AsyncClient, path: str, **params: Any) -> Any:
+    config = _crewlink_configuration()
+    response = await client.get(
+        f"{config['apiBaseUrl']}/{path.lstrip('/')}",
+        params=params,
+        headers={
+            "Authorization": f"Bearer {config['token']}",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": config["webBaseUrl"],
+            "Referer": f"{config['webBaseUrl']}/",
+        },
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+async def _crewlink_post_json(client: httpx.AsyncClient, path: str, payload: Dict[str, Any]) -> Any:
+    config = _crewlink_configuration()
+    response = await client.post(
+        f"{config['apiBaseUrl']}/{path.lstrip('/')}",
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {config['token']}",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": config["webBaseUrl"],
+            "Referer": f"{config['webBaseUrl']}/",
+        },
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+async def _crewlink_try_get_json(client: httpx.AsyncClient, path: str, **params: Any) -> Any:
+    try:
+        return await _crewlink_get_json(client, path, **params)
+    except httpx.HTTPError:
+        return None
+
+
+async def _crewlink_try_post_json(client: httpx.AsyncClient, path: str, payload: Dict[str, Any]) -> Any:
+    try:
+        return await _crewlink_post_json(client, path, payload)
+    except httpx.HTTPError:
+        return None
+
+
+def _crewlink_license_to_name(license_item: Dict[str, Any]) -> str:
+    license_name = (
+        license_item.get("licenceRegister", {}).get("licenceName")
+        or license_item.get("licenseName")
+        or "Imported License"
+    )
+    lowered = license_name.lower()
+    if "master" in lowered and "ii/2" in lowered:
+        return "Certificate of Competency (Master)"
+    if ("chief mate" in lowered or "chief officer" in lowered) and "ii/2" in lowered:
+        return "Certificate of Competency (Chief Officer)"
+    if "navigational watch" in lowered or "ii/1" in lowered:
+        return "Officer in Charge of Navigational Watch II/1"
+    if "gmdss" in lowered:
+        return "GMDSS Radio Operator Certificate IV/2"
+    return license_name
+
+
+def _crewlink_checklist_request(
+    list_item: Dict[str, Any],
+    crew_id: int,
+    sign_on: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not sign_on:
+        return None
+    expected_sign_on_date = (
+        sign_on.get("expectedSignOnDate")
+        or list_item.get("signOnDate")
+        or list_item.get("travelDate")
+    )
+    if not expected_sign_on_date:
+        return None
+    return {
+        "checklistId": 0,
+        "crewId": crew_id,
+        "rankId": sign_on.get("rankId") or list_item.get("rankId") or list_item.get("relieverRankId") or 0,
+        "vesselId": sign_on.get("vesselId") or list_item.get("vesselId") or 0,
+        "activitySignOnId": sign_on.get("activitySignOnId") or 0,
+        "expectedSignOnDate": expected_sign_on_date,
+        "duration": str(sign_on.get("duration") or "3"),
+        "validityPeriod": str(sign_on.get("docsValidityCheckPeriod") or "3"),
+    }
+
+
+def _crewlink_item_from_checklist(
+    sr_no: int,
+    section_kind: str,
+    raw_item: Dict[str, Any],
+) -> Dict[str, Any]:
+    name = _crewlink_checklist_name(raw_item.get("docname", ""))
+    level = (raw_item.get("level") or "").strip()
+    remark = (raw_item.get("remark1") or "").strip()
+    file_path = (raw_item.get("filePath") or "").strip()
+    doc_no = str(raw_item.get("docNo") or "").strip()
+    issue_date = _crewlink_effective_date(raw_item.get("issueDate"))
+    expiry_date = _format_date_display(raw_item.get("expiryDate")) or "NA"
+    verified_rc = bool(raw_item.get("firstVerification") or raw_item.get("firstVerifiedOn"))
+    verified_ops = bool(raw_item.get("secondVerification") or raw_item.get("secondVerifiedOn"))
+    has_evidence = bool(
+        file_path
+        or _crewlink_has_value(doc_no)
+        or issue_date
+        or verified_rc
+        or verified_ops
+    )
+    preferred = level.lower() == "preferred"
+    not_applicable = (
+        remark.lower() in {"na", "n/a"}
+        and not has_evidence
+        and not verified_rc
+        and not verified_ops
+    )
+
+    if section_kind in {"course", "other"}:
+        required = level.lower() == "mandatory"
+    else:
+        required = not preferred and not not_applicable
+
+    missing = required and not has_evidence
+    expired = required and _crewlink_is_expired(raw_item.get("expiryDate"))
+    pending = (
+        required
+        and not missing
+        and not expired
+        and (
+            _crewlink_requires_attention(remark)
+            or (verified_rc and not verified_ops)
+            or (not verified_rc and not verified_ops)
+        )
+    )
+
+    if missing or expired:
+        ai_status: AIStatus = "red"
+    elif pending:
+        ai_status = "yellow"
+    elif has_evidence:
+        ai_status = "green"
+    else:
+        ai_status = "grey"
+
+    final_remark = remark
+    if not final_remark and missing:
+        final_remark = "Required by Crewlink checklist but the document is not attached."
+    elif not final_remark and expired:
+        final_remark = "Document appears expired in Crewlink."
+    elif not final_remark and pending:
+        final_remark = "Checklist verification is pending."
+
+    type_label = str(raw_item.get("type") or "").strip() or _doc_type_from_name(name)
+    item = {
+        "srNo": sr_no,
+        "name": name,
+        "docNo": doc_no if _crewlink_has_value(doc_no) else "",
+        "type": type_label,
+        "issueDate": issue_date or "",
+        "expiryDate": expiry_date,
+        "verifiedRC": verified_rc or verified_ops,
+        "verifiedOps": verified_ops,
+        "portalVerified": verified_ops,
+        "aiStatus": ai_status,
+        "remark": final_remark,
+        "missing": missing,
+        "expired": expired,
+        "attachmentUrl": file_path,
+        "attachmentName": name if file_path else "",
+        "overrideStatus": "",
+        "overrideReason": "",
+        "required": required,
+        "checklistLevel": level,
+        "extractionConfidence": 0.99 if has_evidence else 0.7,
+    }
+    if raw_item.get("checkListId"):
+        item["crewlinkChecklistId"] = raw_item["checkListId"]
+    return item
+
+
+def _crewlink_build_checklist_documents(
+    checklist_sections: Dict[str, List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    sections: List[Dict[str, Any]] = []
+    sr_no = 1
+
+    for title, key, _endpoint in CREWLINK_CHECKLIST_SECTIONS:
+        raw_items = checklist_sections.get(key) or []
+        items: List[Dict[str, Any]] = []
+        for raw_item in raw_items:
+            items.append(_crewlink_item_from_checklist(sr_no, key, raw_item))
+            sr_no += 1
+        if items:
+            sections.append({"title": title, "items": items})
+
+    if not sections:
+        return None
+
+    return {"sections": sections, "summary": {"valid": 0, "pendingVerification": 0, "missing": 0, "expired": 0}}
+
+
+async def _crewlink_fetch_crew_bundle(client: httpx.AsyncClient, crew_id: int) -> Dict[str, Any]:
+    results = await asyncio.gather(
+        _crewlink_try_get_json(client, "CrewDetails/getParticular", crewId=crew_id),
+        _crewlink_try_get_json(client, "passport/getByCrewId", crewId=crew_id),
+        _crewlink_try_get_json(client, "CDC/filter", status=0, crewId=crew_id),
+        _crewlink_try_get_json(client, "crewotherdocuments/GetIndos", crewId=crew_id),
+        _crewlink_try_get_json(client, "CrewLicense/getCrewLicense", status=0, crewId=crew_id),
+        _crewlink_try_get_json(client, f"ActivitySignOn/signonbyuserid/{crew_id}"),
+    )
+    return {
+        "particulars": results[0][0] if isinstance(results[0], list) and results[0] else {},
+        "passport": results[1] or {},
+        "cdc": results[2] or [],
+        "indos": results[3] or [],
+        "licenses": results[4] or [],
+        "signOn": results[5] if isinstance(results[5], dict) else None,
+    }
+
+
+async def _crewlink_fetch_checklist_sections(
+    client: httpx.AsyncClient,
+    list_item: Dict[str, Any],
+    crew_id: int,
+    sign_on: Optional[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    payload = _crewlink_checklist_request(list_item, crew_id, sign_on)
+    if not payload:
+        return {}
+
+    requests = [
+        _crewlink_try_post_json(client, endpoint, payload)
+        for _title, _key, endpoint in CREWLINK_CHECKLIST_SECTIONS
+    ]
+    responses = await asyncio.gather(*requests)
+
+    sections: Dict[str, List[Dict[str, Any]]] = {}
+    for (_title, key, _endpoint), response in zip(CREWLINK_CHECKLIST_SECTIONS, responses):
+        if isinstance(response, list) and response:
+            sections[key] = response
+    return sections
+
+
+def _crewlink_build_documents(
+    rank_code: str,
+    bundle: Dict[str, Any],
+    checklist_sections: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    checklist_docs = _crewlink_build_checklist_documents(checklist_sections or {})
+    if checklist_docs:
+        return checklist_docs
+
+    sections: List[Dict[str, Any]] = []
+    sr_no = 1
+
+    travel_items: List[Dict[str, Any]] = []
+    passport = bundle.get("passport") or {}
+    if passport:
+        travel_items.append(
+            _crewlink_item(
+                sr_no,
+                "Passport",
+                doc_no=passport.get("passportNumber", ""),
+                issue_date=_format_date_display(passport.get("doi")),
+                expiry_date=_format_date_display(passport.get("doe")) or "NA",
+                verified=bool(passport.get("isVerified", True)),
+                remark="Imported from Crewlink Passport register.",
+                attachment_url=passport.get("filePath", ""),
+            )
+        )
+        sr_no += 1
+
+    cdc_items = bundle.get("cdc") or []
+    if cdc_items:
+        cdc_item = cdc_items[0]
+        travel_items.append(
+            _crewlink_item(
+                sr_no,
+                "CDC (Continuous Discharge Certificate)",
+                doc_no=cdc_item.get("cdcNumber", ""),
+                issue_date=_format_date_display(cdc_item.get("doi")),
+                expiry_date=_format_date_display(cdc_item.get("doe")) or "NA",
+                verified=bool(cdc_item.get("isVerified", True)),
+                remark="Imported from Crewlink CDC register.",
+                attachment_url=cdc_item.get("filePath", ""),
+            )
+        )
+        sr_no += 1
+
+    indos_items = bundle.get("indos") or []
+    if indos_items:
+        indos_item = indos_items[0]
+        travel_items.append(
+            _crewlink_item(
+                sr_no,
+                "INDoS Number",
+                doc_no=indos_item.get("documentNo", ""),
+                issue_date=_format_date_display(indos_item.get("issueDate")),
+                expiry_date=_format_date_display(indos_item.get("expiryDate")) or "NA",
+                verified=True,
+                remark="Imported from Crewlink other documents.",
+                attachment_url=indos_item.get("attachment", ""),
+            )
+        )
+        sr_no += 1
+
+    if travel_items:
+        sections.append({"title": "Travel Documents", "items": travel_items})
+
+    license_items: List[Dict[str, Any]] = []
+    for license_item in bundle.get("licenses") or []:
+        license_items.append(
+            _crewlink_item(
+                sr_no,
+                _crewlink_license_to_name(license_item),
+                doc_no=license_item.get("licenseNumber", ""),
+                issue_date=_format_date_display(license_item.get("issueDate")),
+                expiry_date=_format_date_display(license_item.get("expiryDate")) or "NA",
+                verified=bool(license_item.get("isVerified", True)),
+                remark="Imported from Crewlink license register.",
+                attachment_url=license_item.get("attachment", ""),
+            )
+        )
+        sr_no += 1
+    if license_items:
+        sections.append({"title": "License (National & Flag)", "items": license_items})
+
+    imported_names = {item["name"] for section in sections for item in section["items"]}
+    for required_name in VESSEL_MATRIX.get(rank_code, []):
+        if required_name in imported_names or required_name in {"Passport", "CDC (Continuous Discharge Certificate)"}:
+            continue
+        target_title = "STCW Courses"
+        lower_name = required_name.lower()
+        if "flag cdc" in lower_name or "competency" in lower_name or "gmdss" in lower_name:
+            target_title = "License (National & Flag)"
+        elif "offer letter" in lower_name or "interview sheet" in lower_name or "employment" in lower_name or "undertaking" in lower_name or "briefing" in lower_name:
+            target_title = "Other Documents / Pre-joining Docs"
+        elif "security training" in lower_name or "personal safety" in lower_name or "pssr" in lower_name:
+            target_title = "STCW Basic Courses"
+        existing = next((section for section in sections if section["title"] == target_title), None)
+        if not existing:
+            existing = {"title": target_title, "items": []}
+            sections.append(existing)
+        existing["items"].append(
+            _crewlink_item(
+                sr_no,
+                required_name,
+                verified=False,
+                remark="Required by vessel matrix but not found in Crewlink import.",
+                missing=True,
+            )
+        )
+        sr_no += 1
+
+    return {"sections": sections, "summary": {"valid": 0, "pendingVerification": 0, "missing": 0, "expired": 0}}
+
+
+def _crewlink_build_confirmation() -> List[Dict[str, Any]]:
+    return deepcopy(CREWLINK_CONFIRMATION_TEMPLATE)
+
+
+def _crewlink_build_crew_member(list_item: Dict[str, Any], particulars: Dict[str, Any]) -> Dict[str, Any]:
+    rank_code = _normalized_rank_for_matrix(list_item.get("rank", ""), particulars.get("rankRegister", {}).get("code", ""))
+    crew_name = " ".join(
+        part
+        for part in [list_item.get("firstName"), list_item.get("middleName"), list_item.get("lastName")]
+        if part
+    ).strip()
+    due_date = list_item.get("dueDate") or particulars.get("reliefDate") or ""
+    status = "onboard" if (particulars.get("status") or list_item.get("status") or "").lower() == "onboard" else "planned"
+    return {
+        "id": f"cl{list_item.get('crewId') or list_item.get('reliever1') or secrets.token_hex(4)}",
+        "srNo": 0,
+        "rank": rank_code,
+        "name": crew_name or list_item.get("relieverName") or "Unknown Crew",
+        "empNo": list_item.get("empNumber") or list_item.get("relieverEmpNumber") or "",
+        "nationality": list_item.get("nationality") or "",
+        "dateOfBirth": _format_date_display(particulars.get("dob")),
+        "indosNo": "",
+        "travelDate": _format_date_display(list_item.get("travelDate")),
+        "signOnDate": _format_date_display(list_item.get("signOnDate")),
+        "reliefDue": _format_date_display(due_date),
+        "relieverRank": list_item.get("relieverRank") or "",
+        "relieverName": list_item.get("relieverName") or "",
+        "relieverApproved": str(list_item.get("planStatus") or "").lower() == "approved",
+        "aiStatus": "yellow",
+        "complianceIssue": False,
+        "status": status,
+        "crewlinkCrewId": list_item.get("crewId"),
+        "crewlinkCrewListId": list_item.get("crewListId"),
+    }
+
+
+async def _import_crewlink_vessel(
+    *,
+    vessel_id: Optional[int],
+    crew_ids: Optional[List[int]],
+    max_crew: Optional[int],
+    replace_state: bool,
+    actor: str,
+) -> Dict[str, Any]:
+    config = _crewlink_configuration()
+    if not config["configured"]:
+        raise HTTPException(status_code=400, detail="Crewlink API token is not configured.")
+    target_vessel_id = vessel_id or config["vesselId"]
+    if not target_vessel_id:
+        raise HTTPException(status_code=400, detail="Crewlink vessel ID is not configured.")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        vessel_header, crew_list = await asyncio.gather(
+            _crewlink_get_json(client, "Vessel/getVesselHeader", vesselId=target_vessel_id),
+            _crewlink_get_json(client, "CrewList/getCrewList", vesselId=target_vessel_id),
+        )
+
+        selected_list = [item for item in crew_list if item.get("crewId") or item.get("reliever1")]
+        if crew_ids:
+            requested = set(crew_ids)
+            selected_list = [item for item in selected_list if item.get("crewId") in requested or item.get("reliever1") in requested]
+        if max_crew:
+            selected_list = selected_list[:max_crew]
+
+        imported_crew: List[Dict[str, Any]] = []
+        imported_documents: Dict[str, Any] = {}
+        imported_confirmation: Dict[str, Any] = {}
+        imported_audit_logs: Dict[str, Any] = {}
+
+        for index, item in enumerate(selected_list, start=1):
+            source_crew_id = item.get("crewId") or item.get("reliever1")
+            if not source_crew_id:
+                continue
+            bundle = await _crewlink_fetch_crew_bundle(client, int(source_crew_id))
+            checklist_sections = await _crewlink_fetch_checklist_sections(
+                client,
+                item,
+                int(source_crew_id),
+                bundle.get("signOn"),
+            )
+            crew_member = _crewlink_build_crew_member(item, bundle["particulars"])
+            crew_member["srNo"] = index
+            if bundle.get("indos"):
+                crew_member["indosNo"] = bundle["indos"][0].get("documentNo", "")
+            imported_crew.append(crew_member)
+            imported_documents[crew_member["id"]] = _crewlink_build_documents(
+                crew_member["rank"],
+                bundle,
+                checklist_sections,
+            )
+            imported_confirmation[crew_member["id"]] = _crewlink_build_confirmation()
+            imported_audit_logs[crew_member["id"]] = [
+                {
+                    "id": secrets.token_hex(6),
+                    "timestamp": now_stamp(),
+                    "actor": actor,
+                    "action": "crewlink_import",
+                    "target": crew_member["name"],
+                    "message": f"Imported live Crewlink data for {crew_member['name']} ({crew_member['empNo']}) from vessel {item.get('vesselName') or target_vessel_id}.",
+                }
+            ]
+
+    if replace_state:
+        STATE["crew"] = imported_crew
+        STATE["documents"] = imported_documents
+        STATE["confirmation"] = imported_confirmation
+        STATE["audit_logs"] = imported_audit_logs
+        STATE["learning_feedback"] = {}
+        STATE["self_service_links"] = {}
+        STATE["latest_link_by_crew"] = {}
+    else:
+        existing_ids = {crew["id"] for crew in STATE["crew"]}
+        for crew_member in imported_crew:
+            if crew_member["id"] not in existing_ids:
+                STATE["crew"].append(crew_member)
+        STATE["documents"].update(imported_documents)
+        STATE["confirmation"].update(imported_confirmation)
+        STATE["audit_logs"].update(imported_audit_logs)
+
+    vessel = vessel_header[0] if vessel_header else {}
+    STATE["vessel"] = {
+        "id": f"crewlink-vessel-{target_vessel_id}",
+        "name": vessel.get("vesselName") or f"Vessel {target_vessel_id}",
+        "type": vessel.get("shipCategory") or "",
+        "imo": f"IMO {vessel.get('imo')}" if vessel.get("imo") else "",
+        "flag": vessel.get("flag") or "",
+        "totalCrew": len(imported_crew),
+        "reliefOverdue": 0,
+        "dueOneMonth": 0,
+        "extraCrew": len([crew for crew in imported_crew if crew.get("status") == "planned"]),
+        "extendedContract": 0,
+        "reducedContract": 0,
+        "crewlinkVesselId": target_vessel_id,
+    }
+
+    for crew_member in imported_crew:
+        _recalculate_crew(crew_member["id"])
+
+    persist_state()
+    return {
+        "ok": True,
+        "vessel": STATE["vessel"],
+        "importedCrew": len(imported_crew),
+        "crewIds": [crew["id"] for crew in imported_crew],
     }
 
 
@@ -1050,13 +1733,27 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     item.setdefault("overrideStatus", "")
     item.setdefault("overrideReason", "")
     item.setdefault("extractionConfidence", 0.98 if item.get("verifiedRC") else 0.72)
-    item["required"] = item["name"] in required_docs
+    item["required"] = item.get("required", item["name"] in required_docs)
 
 
 def _recalculate_crew(crew_id: str) -> None:
     required_docs = _required_documents_for(crew_id)
     docs = STATE["documents"][crew_id]
     all_items = [item for section in docs["sections"] for item in section["items"]]
+
+    if not required_docs:
+        for item in all_items:
+            _hydrate_document_item(crew_id, item, required_docs)
+        docs["summary"] = {
+            "valid": 0,
+            "pendingVerification": 0,
+            "missing": 0,
+            "expired": 0,
+        }
+        crew = _find_crew_member(crew_id)
+        crew["aiStatus"] = "yellow"
+        crew["complianceIssue"] = False
+        return
 
     valid = 0
     pending = 0
@@ -1704,6 +2401,7 @@ async def _generate_ai_narrative(crew_id: str) -> str:
 
     crew = _find_crew_member(crew_id)
     docs = STATE["documents"][crew_id]
+    vessel = STATE.get("vessel", BASE_VESSEL)
     summary = docs["summary"]
     required_docs = _required_documents_for(crew_id)
     missing_items = [
@@ -1722,8 +2420,8 @@ async def _generate_ai_narrative(crew_id: str) -> str:
     prompt = f"""You are a maritime compliance officer helping review a pre-joining checklist.
 Seafarer: {crew['name']}
 Rank: {crew['rank']}
-Vessel: {BASE_VESSEL['name']} ({BASE_VESSEL['type']})
-Flag: {BASE_VESSEL['flag']}
+Vessel: {vessel.get('name', BASE_VESSEL['name'])} ({vessel.get('type', BASE_VESSEL['type'])})
+Flag: {vessel.get('flag', BASE_VESSEL['flag'])}
 Required documents count: {len(required_docs)}
 Valid and verified: {summary['valid']}
 Pending verification: {summary['pendingVerification']}
@@ -1793,13 +2491,14 @@ def _build_ai_check_payload(crew_id: str, ai_narrative: str) -> Dict[str, Any]:
     crew = _find_crew_member(crew_id)
     docs = STATE["documents"][crew_id]
     extraction = _build_extraction_report(crew_id)
+    vessel = STATE.get("vessel", BASE_VESSEL)
 
     return {
         "crewId": crew_id,
         "name": crew["name"],
         "rank": crew["rank"],
-        "vessel": f"{BASE_VESSEL['name']} ({BASE_VESSEL['type']})",
-        "flag": BASE_VESSEL["flag"],
+        "vessel": f"{vessel.get('name', BASE_VESSEL['name'])} ({vessel.get('type', BASE_VESSEL['type'])})",
+        "flag": vessel.get("flag", BASE_VESSEL["flag"]),
         "summary": docs["summary"],
         "missingItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("missing")],
         "pendingItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("aiStatus") == "yellow" and not item.get("missing")],
@@ -1892,6 +2591,7 @@ def _create_self_service_link(crew_id: str, sent_by: str) -> Dict[str, Any]:
 def _build_export_pdf(crew_id: str) -> bytes:
     crew = _find_crew_member(crew_id)
     docs = STATE["documents"][crew_id]
+    vessel = STATE.get("vessel", BASE_VESSEL)
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -1903,7 +2603,7 @@ def _build_export_pdf(crew_id: str) -> bytes:
     y -= 22
 
     pdf.setFont("Helvetica", 10)
-    pdf.drawString(40, y, f"Rank: {crew['rank']}    Emp No: {crew['empNo']}    Vessel: {BASE_VESSEL['name']}")
+    pdf.drawString(40, y, f"Rank: {crew['rank']}    Emp No: {crew['empNo']}    Vessel: {vessel.get('name', BASE_VESSEL['name'])}")
     y -= 16
     pdf.drawString(40, y, f"Generated: {now_stamp()}")
     y -= 20
@@ -1973,6 +2673,7 @@ def logout(current_user: Dict[str, Any] = Depends(require_user())):
 def get_integrations_status(current_user: Dict[str, Any] = Depends(require_user())):
     portal_configuration = _portal_configuration()
     ai_configuration = _ai_configuration()
+    crewlink_configuration = _crewlink_configuration()
     return {
         "portal": {
             "provider": portal_configuration["provider"],
@@ -1989,8 +2690,39 @@ def get_integrations_status(current_user: Dict[str, Any] = Depends(require_user(
             "databasePath": portal_configuration["databasePath"],
             "uploadsPath": os.path.join(data_dir(), "uploads"),
         },
+        "crewlink": {
+            "configured": crewlink_configuration["configured"],
+            "apiBaseUrl": crewlink_configuration["apiBaseUrl"],
+            "vesselId": crewlink_configuration["vesselId"],
+        },
         "user": current_user["role"],
     }
+
+
+@app.get("/api/integrations/crewlink/status")
+def get_crewlink_status(current_user: Dict[str, Any] = Depends(require_user({ROLE_ADMIN, ROLE_OPS, ROLE_RC}))):
+    configuration = _crewlink_configuration()
+    return {
+        "configured": configuration["configured"],
+        "apiBaseUrl": configuration["apiBaseUrl"],
+        "webBaseUrl": configuration["webBaseUrl"],
+        "vesselId": configuration["vesselId"],
+        "hasToken": configuration["hasToken"],
+    }
+
+
+@app.post("/api/integrations/crewlink/import")
+async def import_crewlink_data(
+    request: CrewlinkImportRequest,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_ADMIN, ROLE_OPS})),
+):
+    return await _import_crewlink_vessel(
+        vessel_id=request.vesselId,
+        crew_ids=request.crewIds,
+        max_crew=request.maxCrew,
+        replace_state=request.replaceState,
+        actor=current_user["fullName"],
+    )
 
 
 @app.get("/api/files/{file_id}")
