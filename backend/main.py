@@ -1503,11 +1503,15 @@ def _build_portal_result(
     portal: str,
     portal_label: Optional[str],
     portal_url: Optional[str],
-    verification_mode: Literal["auto", "manual", "directory"],
+    verification_mode: Literal["auto", "manual", "directory", "review"],
     required_inputs: Optional[List[str]] = None,
     recommended_ai_status: AIStatus = "yellow",
     checklist_status: Literal["good", "pending", "missing"] = "pending",
+    eligible: Optional[bool] = None,
+    auto_capable: Optional[bool] = None,
 ) -> Dict[str, Any]:
+    resolved_eligible = verification_mode != "review" if eligible is None else eligible
+    resolved_auto_capable = verification_mode == "auto" if auto_capable is None else auto_capable
     return {
         "docName": doc_name,
         "verified": verified,
@@ -1519,7 +1523,35 @@ def _build_portal_result(
         "requiredInputs": required_inputs or [],
         "recommendedAiStatus": recommended_ai_status,
         "checklistStatus": checklist_status,
+        "eligible": resolved_eligible,
+        "autoCapable": resolved_auto_capable,
     }
+
+
+def _serialize_portal_route(route: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "portal": route["portal"],
+        "portalLabel": route["portalLabel"],
+        "portalUrl": route["portalUrl"],
+        "verificationMode": route["verificationMode"],
+        "requiredInputs": route["requiredInputs"],
+        "message": route["message"],
+        "eligible": route["eligible"],
+        "autoCapable": route["autoCapable"],
+    }
+
+
+def _review_status_for_item(item: Dict[str, Any]) -> AIStatus:
+    if item.get("overrideStatus") in {"green", "yellow", "red"}:
+        return item["overrideStatus"]
+    if item.get("missing") or item.get("expired", False):
+        return "red"
+    current = item.get("aiStatus")
+    if current in {"green", "yellow", "red"} and not (
+        current == "yellow" and not item.get("portalVerified", False)
+    ):
+        return current
+    return "green" if item.get("required", True) else "grey"
 
 
 def _looks_like_indian_competency_name(doc_name: str) -> bool:
@@ -1722,7 +1754,7 @@ def _resolve_portal_route(
         "portal": "Crewlink AI",
         "portalLabel": "Matrix / document completeness check",
         "portalUrl": links["dg_shipping_home"] if indian_document else "",
-        "verificationMode": "auto",
+        "verificationMode": "review",
         "requiredInputs": [],
         "message": "This document does not have a supported public verification portal in the current workflow and remains under AI + human checklist review.",
         "strategy": "unsupported",
@@ -1761,6 +1793,9 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     item.setdefault("overrideReason", "")
     item.setdefault("extractionConfidence", 0.98 if item.get("verifiedRC") else 0.72)
     item["required"] = item.get("required", item["name"] in required_docs)
+    item["portalRoute"] = _serialize_portal_route(
+        _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+    )
 
 
 def _recalculate_crew(crew_id: str) -> None:
@@ -1791,7 +1826,9 @@ def _recalculate_crew(crew_id: str) -> None:
     for item in all_items:
         _hydrate_document_item(crew_id, item, required_docs)
         status = item.get("overrideStatus") or item.get("aiStatus", "grey")
-        route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+        route = item.get("portalRoute") or _serialize_portal_route(
+            _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+        )
         portal_pending = (
             crewlink_imported
             and item["required"]
@@ -1804,7 +1841,10 @@ def _recalculate_crew(crew_id: str) -> None:
         if portal_pending:
             status = "yellow"
             if not item.get("remark"):
-                item["remark"] = f"Portal verification pending through {route['portalLabel']}."
+                if route.get("autoCapable"):
+                    item["remark"] = f"Portal verification pending through {route['portalLabel']}."
+                else:
+                    item["remark"] = f"Manual portal review required through {route['portalLabel']}."
         item["aiStatus"] = status
 
         if item["required"] and item.get("missing"):
@@ -2238,6 +2278,8 @@ async def _run_official_portal_check(
         required_inputs=route["requiredInputs"],
         recommended_ai_status="yellow",
         checklist_status="pending",
+        eligible=route.get("eligible", True),
+        auto_capable=route.get("autoCapable", False),
     )
 
 
@@ -2278,6 +2320,8 @@ async def _build_portal_response(
                     required_inputs=payload.get("requiredInputs") or [],
                     recommended_ai_status=payload.get("recommendedAiStatus") or ("green" if payload.get("verified") else "yellow"),
                     checklist_status=payload.get("checklistStatus") or ("good" if payload.get("verified") else "pending"),
+                    eligible=payload.get("eligible", True),
+                    auto_capable=payload.get("autoCapable", True),
                 )
             except Exception as exc:
                 return _build_portal_result(
@@ -2291,6 +2335,8 @@ async def _build_portal_response(
                     required_inputs=[],
                     recommended_ai_status="yellow",
                     checklist_status="pending",
+                    eligible=True,
+                    auto_capable=True,
                 )
 
         if route.get("autoCapable") and _portal_live_checks_enabled():
@@ -2308,6 +2354,8 @@ async def _build_portal_response(
                     required_inputs=route["requiredInputs"],
                     recommended_ai_status="yellow",
                     checklist_status="pending",
+                    eligible=route.get("eligible", True),
+                    auto_capable=route.get("autoCapable", False),
                 )
 
         if not route.get("eligible"):
@@ -2318,10 +2366,12 @@ async def _build_portal_response(
                 portal=route["portal"],
                 portal_label=route["portalLabel"],
                 portal_url=route["portalUrl"],
-                verification_mode="auto",
+                verification_mode=route["verificationMode"],
                 required_inputs=route["requiredInputs"],
                 recommended_ai_status="yellow",
                 checklist_status="pending",
+                eligible=False,
+                auto_capable=False,
             )
 
         return _build_portal_result(
@@ -2335,6 +2385,8 @@ async def _build_portal_response(
             required_inputs=route["requiredInputs"],
             recommended_ai_status="yellow",
             checklist_status="pending",
+            eligible=route.get("eligible", True),
+            auto_capable=route.get("autoCapable", False),
         )
     route = _resolve_portal_route(crew_id, doc_name, doc_no, issue_authority)
     return _build_portal_result(
@@ -2348,6 +2400,8 @@ async def _build_portal_response(
         required_inputs=route["requiredInputs"],
         recommended_ai_status="yellow",
         checklist_status="pending",
+        eligible=route.get("eligible", True),
+        auto_capable=route.get("autoCapable", False),
     )
 
 
@@ -2363,6 +2417,10 @@ def _apply_portal_result(crew_id: str, item: Dict[str, Any], result: Dict[str, A
             item["overrideReason"] = ""
         else:
             item["verifiedOps"] = False
+    elif result.get("verificationMode") == "review":
+        item["aiStatus"] = result.get("recommendedAiStatus", _review_status_for_item(item))
+        item["remark"] = result.get("message", item.get("remark", ""))
+        item["verifiedOps"] = False
     elif result["verified"] and not item.get("missing"):
         item["aiStatus"] = "green"
         item["overrideStatus"] = ""
@@ -2429,7 +2487,7 @@ def _get_fallback_narrative(crew_id: str) -> str:
         )
     return (
         f"All required documents are attached for {crew['name']}, but {summary['pendingVerification']} item(s) "
-        f"still require portal verification, including {', '.join(pending_items[:3])}. "
+        f"still require verification or Ops review, including {', '.join(pending_items[:3])}. "
         "Crew may proceed only with controlled review from Ops. Risk level: Medium."
     )
 
@@ -2464,7 +2522,7 @@ Vessel: {vessel.get('name', BASE_VESSEL['name'])} ({vessel.get('type', BASE_VESS
 Flag: {vessel.get('flag', BASE_VESSEL['flag'])}
 Required documents count: {len(required_docs)}
 Valid and verified: {summary['valid']}
-Pending verification: {summary['pendingVerification']}
+Pending review: {summary['pendingVerification']}
 Missing: {summary['missing']}
 Expired: {summary['expired']}
 Missing items: {', '.join(missing_items) if missing_items else 'None'}
@@ -2952,8 +3010,29 @@ async def upload_document_attachment(
     item["overrideStatus"] = ""
     item["overrideReason"] = ""
     item["aiStatus"] = "yellow"
-    portal_result = await _build_portal_response(crew_id, item["name"], item.get("docNo", ""))
-    _apply_portal_result(crew_id, item, portal_result)
+    route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+    if route.get("eligible"):
+        portal_result = await _build_portal_response(crew_id, item["name"], item.get("docNo", ""))
+        _apply_portal_result(crew_id, item, portal_result)
+    else:
+        review_status = _review_status_for_item(item)
+        item["aiStatus"] = review_status
+        item["remark"] = "Document uploaded and matched to the checklist. No supported public portal is configured for this document type, so it remains under AI + human checklist review."
+        _recalculate_crew(crew_id)
+        portal_result = _build_portal_result(
+            doc_name=item["name"],
+            verified=False,
+            message=item["remark"],
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode=route["verificationMode"],
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status=review_status,
+            checklist_status="missing" if review_status == "red" else "good",
+            eligible=False,
+            auto_capable=False,
+        )
     _append_audit(
         crew_id,
         actor=current_user["fullName"],
@@ -2996,6 +3075,9 @@ async def verify_portal(
     item = _find_document_by_name(crew_id, request.docName)
     await asyncio.sleep(0.8)
     result = await _build_portal_response(crew_id, request.docName, request.docNo, request.issueAuthority)
+    if result.get("verificationMode") == "review" and not result["verified"]:
+        result["recommendedAiStatus"] = _review_status_for_item(item)
+        result["checklistStatus"] = "missing" if result["recommendedAiStatus"] == "red" else "good"
     _apply_portal_result(crew_id, item, result)
     _append_audit(
         crew_id,
@@ -3015,6 +3097,16 @@ async def verify_portal_batch(
 ):
     _find_crew_member(crew_id)
     await asyncio.sleep(1.0)
+    manual_review_items = [
+        item
+        for section in STATE["documents"][crew_id]["sections"]
+        for item in section["items"]
+        if item.get("aiStatus") == "yellow"
+        and not item.get("missing")
+        and not item.get("portalVerified")
+        and (_resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("eligible"))
+        and not (_resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("autoCapable"))
+    ]
     items_to_verify = [
         item
         for section in STATE["documents"][crew_id]["sections"]
@@ -3022,20 +3114,18 @@ async def verify_portal_batch(
         if item.get("aiStatus") == "yellow"
         and not item.get("missing")
         and not item.get("portalVerified")
-        and _resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("eligible")
+        and _resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("autoCapable")
     ]
 
     results = []
     verified_count = 0
     failed_count = 0
-    manual_count = 0
+    manual_count = len(manual_review_items)
 
     for item in items_to_verify:
         result = await _build_portal_response(crew_id, item["name"], item.get("docNo", ""))
         _apply_portal_result(crew_id, item, result)
-        if result.get("verificationMode") in {"manual", "directory"} and not result["verified"]:
-            manual_count += 1
-        elif result["verified"]:
+        if result["verified"]:
             verified_count += 1
         else:
             failed_count += 1
@@ -3046,7 +3136,10 @@ async def verify_portal_batch(
         actor=current_user["fullName"],
         action="batch_verification",
         target="Pending documents",
-        message=f"Batch verification completed: {verified_count} verified, {manual_count} routed to portal, {failed_count} failed.",
+        message=(
+            f"Batch portal automation completed: {verified_count} verified automatically, "
+            f"{manual_count} still require manual portal review, {failed_count} failed."
+        ),
     )
     persist_state()
 

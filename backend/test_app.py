@@ -68,6 +68,31 @@ def test_verify_portal_returns_official_route_details():
     assert data["verificationMode"] == "auto"
     assert data["portal"] == "DG Shipping India"
     assert "DG Shipping" in data["message"]
+    assert data["autoCapable"] is True
+    assert data["eligible"] is True
+
+
+def test_documents_payload_includes_portal_route_metadata():
+    response = client.get("/api/crew/c003/documents", headers=auth_headers("ops", "CrewlinkOps!23"))
+
+    assert response.status_code == 200
+    competency = next(
+        item
+        for section in response.json()["sections"]
+        for item in section["items"]
+        if item["name"] == "Certificate of Competency (Chief Officer)"
+    )
+    assert competency["portalRoute"]["portal"] == "DG Shipping India"
+    assert competency["portalRoute"]["autoCapable"] is True
+
+    company_form = next(
+        item
+        for section in response.json()["sections"]
+        for item in section["items"]
+        if item["name"] == "Interview Sheet (FP01D)"
+    )
+    assert company_form["portalRoute"]["verificationMode"] == "review"
+    assert company_form["portalRoute"]["eligible"] is False
 
 
 def test_verify_portal_applies_automated_result(monkeypatch):
@@ -268,3 +293,31 @@ def test_psychometric_document_does_not_route_to_watchkeeping_checker():
 
     assert route["portal"] == "Crewlink AI"
     assert route["eligible"] is False
+
+
+def test_verify_portal_review_only_document_stays_good():
+    response = client.post(
+        "/api/crew/c003/verify-portal",
+        json={
+            "docName": "Interview Sheet (FP01D)",
+            "docNo": "FP01D-A0806-2026",
+            "issueAuthority": "Company",
+        },
+        headers=auth_headers("ops", "CrewlinkOps!23"),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["verificationMode"] == "review"
+    assert data["eligible"] is False
+    assert data["recommendedAiStatus"] == "green"
+
+    after = client.get("/api/crew/c003/documents", headers=auth_headers("ops", "CrewlinkOps!23")).json()
+    interview_sheet = next(
+        item
+        for section in after["sections"]
+        for item in section["items"]
+        if item["name"] == "Interview Sheet (FP01D)"
+    )
+    assert interview_sheet["aiStatus"] == "green"
+    assert "supported public verification portal" in interview_sheet["remark"]

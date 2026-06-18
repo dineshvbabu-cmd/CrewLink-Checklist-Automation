@@ -8,6 +8,8 @@ interface Props {
   loading: boolean
   portalRunning: boolean
   portalSummary: string | null
+  autoVerificationPendingCount: number
+  manualReviewPendingCount: number
   integrationStatus: IntegrationStatus | null
   crewName: string
   rank: string
@@ -47,6 +49,8 @@ export default function AIPanel({
   loading,
   portalRunning,
   portalSummary,
+  autoVerificationPendingCount,
+  manualReviewPendingCount,
   integrationStatus,
   crewName,
   rank,
@@ -95,7 +99,7 @@ export default function AIPanel({
             <div>
               <div className="flex gap-6 mb-3 flex-wrap">
                 <Metric status="green" count={result.summary.valid} label="documents - Valid and verified" />
-                <Metric status="yellow" count={result.summary.pendingVerification} label="documents - Portal verification pending" />
+                <Metric status="yellow" count={result.summary.pendingVerification} label="documents - Pending verification / review" />
                 <Metric status="red" count={result.summary.missing} label="items - Missing or expired" />
               </div>
 
@@ -115,6 +119,12 @@ export default function AIPanel({
               <div style={{ backgroundColor: '#eef4fb', border: '1px solid #c5d8ee', borderRadius: 4 }} className="p-3 mt-2">
                 <div className="text-xs text-gray-500 mb-1 font-semibold">AI Assessment</div>
                 <p className="text-xs text-gray-700 leading-relaxed m-0">{result.aiNarrative}</p>
+              </div>
+
+              <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                {autoVerificationPendingCount} document(s) can be auto-verified through supported portals.
+                {' '}
+                {manualReviewPendingCount} document(s) still require manual portal review or Ops review.
               </div>
 
               <div className="grid md:grid-cols-2 gap-3 mt-3">
@@ -183,11 +193,11 @@ export default function AIPanel({
                 </button>
                 <button
                   onClick={onRunPortalVerification}
-                  disabled={portalRunning || result.summary.pendingVerification === 0}
-                  style={{ backgroundColor: result.summary.pendingVerification > 0 ? '#e67e22' : '#27ae60', color: 'white', border: 'none', borderRadius: 4, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}
+                  disabled={portalRunning || autoVerificationPendingCount === 0}
+                  style={{ backgroundColor: autoVerificationPendingCount > 0 ? '#e67e22' : '#27ae60', color: 'white', border: 'none', borderRadius: 4, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}
                   className="hover:opacity-90 disabled:opacity-60"
                 >
-                  {portalRunning ? 'Running portal verification...' : 'Run Portal Verification'}
+                  {portalRunning ? 'Running portal automation...' : 'Run Portal Automation'}
                 </button>
               </div>
             </div>

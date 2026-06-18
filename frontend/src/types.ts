@@ -1,5 +1,16 @@
 export type AIStatus = 'green' | 'yellow' | 'red' | 'grey'
 
+export interface PortalRouteInfo {
+  portal: string
+  portalLabel?: string
+  portalUrl?: string
+  verificationMode?: 'auto' | 'manual' | 'directory' | 'review'
+  requiredInputs?: string[]
+  message?: string
+  eligible?: boolean
+  autoCapable?: boolean
+}
+
 export interface Vessel {
   id: string
   name: string
@@ -54,6 +65,7 @@ export interface DocumentItem {
   overrideReason?: string
   extractionConfidence?: number
   expired?: boolean
+  portalRoute?: PortalRouteInfo
 }
 
 export interface DocumentSection {
@@ -89,10 +101,12 @@ export interface PortalVerificationResult {
   portal: string
   portalLabel?: string
   portalUrl?: string
-  verificationMode?: 'auto' | 'manual' | 'directory'
+  verificationMode?: 'auto' | 'manual' | 'directory' | 'review'
   requiredInputs?: string[]
   recommendedAiStatus?: 'green' | 'yellow' | 'red'
   checklistStatus?: 'good' | 'pending' | 'missing'
+  eligible?: boolean
+  autoCapable?: boolean
 }
 
 export interface PortalBatchResult {

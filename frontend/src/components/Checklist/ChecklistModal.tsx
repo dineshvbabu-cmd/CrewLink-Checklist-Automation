@@ -72,6 +72,28 @@ function applyVerificationResult(currentDocs: DocumentsData, result: PortalVerif
   }
 }
 
+function countPortalQueues(data: DocumentsData | null) {
+  const counts = { autoPending: 0, manualPending: 0 }
+  if (!data) {
+    return counts
+  }
+
+  data.sections.forEach(section => {
+    section.items.forEach(item => {
+      if (item.aiStatus !== 'yellow' || item.missing || item.portalVerified) {
+        return
+      }
+      if (item.portalRoute?.autoCapable) {
+        counts.autoPending += 1
+      } else if (item.portalRoute?.eligible) {
+        counts.manualPending += 1
+      }
+    })
+  })
+
+  return counts
+}
+
 export default function ChecklistModal({ member, onClose }: Props) {
   const { user } = useAuth()
   const [activeTab, setActiveTab] = useState(0)
@@ -112,6 +134,7 @@ export default function ChecklistModal({ member, onClose }: Props) {
   const canSendSelfService = !!user && ['rc', 'admin'].includes(user.role)
   const canUpload = !!user && ['rc', 'ops', 'admin'].includes(user.role)
   const canUpdateOps = !!user && ['ops', 'admin'].includes(user.role)
+  const { autoPending, manualPending } = countPortalQueues(docs)
 
   const refreshSideData = async () => {
     const [reportResponse, auditResponse, linkResponse, integrationResponse] = await Promise.all([
@@ -190,7 +213,7 @@ export default function ChecklistModal({ member, onClose }: Props) {
         return next
       })
       setPortalSummary(
-        `Portal verification complete: ${batch.verifiedCount} verified, ${batch.manualCount} routed to official portals, ${batch.failedCount} failed.`,
+        `Portal automation complete: ${batch.verifiedCount} verified automatically, ${batch.manualCount} still require manual portal review, ${batch.failedCount} could not be auto-verified.`,
       )
       await handleAICheck()
     } finally {
@@ -409,6 +432,8 @@ export default function ChecklistModal({ member, onClose }: Props) {
                     loading={aiLoading}
                     portalRunning={portalRunning}
                     portalSummary={portalSummary}
+                    autoVerificationPendingCount={autoPending}
+                    manualReviewPendingCount={manualPending}
                     integrationStatus={integrationStatus}
                     crewName={member.name}
                     rank={member.rank}

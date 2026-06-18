@@ -9,6 +9,38 @@ const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
   red: 'Missing',
 }
 
+function verificationColor(result: PortalVerificationResult) {
+  if (result.verificationMode === 'manual' || result.verificationMode === 'directory') {
+    return '#f39c12'
+  }
+  if (result.verificationMode === 'review') {
+    return '#64748b'
+  }
+  if (result.checklistStatus === 'good') {
+    return '#27ae60'
+  }
+  if (result.checklistStatus === 'missing') {
+    return '#e74c3c'
+  }
+  return '#f39c12'
+}
+
+function verificationLabel(result: PortalVerificationResult) {
+  if (result.verificationMode === 'manual' || result.verificationMode === 'directory') {
+    return 'Manual portal review'
+  }
+  if (result.verificationMode === 'review') {
+    return 'AI review only'
+  }
+  if (result.checklistStatus === 'good') {
+    return 'Good'
+  }
+  if (result.checklistStatus === 'missing') {
+    return 'Missing'
+  }
+  return 'Pending'
+}
+
 interface Props {
   data: DocumentsData
   approvedBy?: string
@@ -107,6 +139,10 @@ export default function PreDepartureTab({
                     canEditRemark || (canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow'))
                   const displayStatus = item.overrideStatus || item.aiStatus
                   const showOverrideSection = canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.overrideStatus)
+                  const portalRoute = item.portalRoute
+                  const routeNeedsManualReview = portalRoute?.eligible && !portalRoute?.autoCapable
+                  const routeIsUnsupported = portalRoute && portalRoute.eligible === false
+                  const canAutoVerify = portalRoute?.autoCapable
 
                   return (
                     <Fragment key={`${section.title}-${item.srNo}`}>
@@ -164,46 +200,47 @@ export default function PreDepartureTab({
                         <td>
                           {isMissing ? (
                             <span className="text-gray-400 text-xs">-</span>
-                        ) : item.verifiedOps ? (
-                          <span className="tick-verified" title="Ops Verified">OK</span>
-                        ) : verifyResult ? (
-                          <div>
-                            <span
-                              style={{
-                                color:
-                                  verifyResult.verificationMode === 'manual' || verifyResult.verificationMode === 'directory'
-                                    ? '#f39c12'
-                                    : verifyResult.checklistStatus === 'good'
-                                      ? '#27ae60'
-                                      : verifyResult.checklistStatus === 'missing'
-                                        ? '#e74c3c'
-                                        : '#f39c12',
-                              }}
-                              className="text-xs"
-                            >
-                              {verifyResult.verificationMode === 'manual' || verifyResult.verificationMode === 'directory'
-                                ? 'Portal route ready'
-                                : verifyResult.checklistStatus === 'good'
-                                  ? 'Good'
-                                  : verifyResult.checklistStatus === 'missing'
-                                    ? 'Missing'
-                                    : 'Pending'}
-                            </span>
-                            <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
-                              {verifyResult.message}
+                          ) : item.verifiedOps ? (
+                            <span className="tick-verified" title="Ops Verified">OK</span>
+                          ) : verifyResult ? (
+                            <div>
+                              <span style={{ color: verificationColor(verifyResult) }} className="text-xs">
+                                {verificationLabel(verifyResult)}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
+                                {verifyResult.message}
+                              </div>
+                              {verifyResult.portalUrl && (
+                                <a
+                                  href={verifyResult.portalUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="link-blue text-[10px]"
+                                >
+                                  Open {verifyResult.portalLabel || verifyResult.portal}
+                                </a>
+                              )}
                             </div>
-                            {verifyResult.portalUrl && (
-                              <a
-                                href={verifyResult.portalUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="link-blue text-[10px]"
-                              >
-                                Open {verifyResult.portalLabel || verifyResult.portal}
-                              </a>
-                            )}
-                          </div>
-                        ) : (
+                          ) : routeNeedsManualReview ? (
+                            <div>
+                              <span style={{ color: '#f39c12' }} className="text-xs">Manual portal review</span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
+                                {portalRoute?.portalLabel || portalRoute?.portal}
+                              </div>
+                              {portalRoute?.portalUrl && (
+                                <a href={portalRoute.portalUrl} target="_blank" rel="noreferrer" className="link-blue text-[10px]">
+                                  Open portal
+                                </a>
+                              )}
+                            </div>
+                          ) : routeIsUnsupported ? (
+                            <div>
+                              <span style={{ color: '#64748b' }} className="text-xs">AI review only</span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
+                                No supported public portal
+                              </div>
+                            </div>
+                          ) : canAutoVerify ? (
                             <button
                               onClick={() => onVerifyDocument(item.name, item.docNo)}
                               disabled={verifyingDoc === item.name}
@@ -218,6 +255,8 @@ export default function PreDepartureTab({
                                 'Verify'
                               )}
                             </button>
+                          ) : (
+                            <span className="text-gray-300 text-xs">-</span>
                           )}
                         </td>
                         <td className="text-center">
