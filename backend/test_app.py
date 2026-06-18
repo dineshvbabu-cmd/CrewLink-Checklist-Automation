@@ -261,3 +261,10 @@ def test_indian_master_fg_document_routes_to_dg_shipping_coc_checker():
     assert route["portal"] == "DG Shipping India"
     assert route["strategy"] == "dg_coc"
     assert route["eligible"] is True
+
+
+def test_psychometric_document_does_not_route_to_watchkeeping_checker():
+    route = main._resolve_portal_route("c003", "Psychometric Test (PF-16)", "", "India")
+
+    assert route["portal"] == "Crewlink AI"
+    assert route["eligible"] is False

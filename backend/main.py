@@ -1609,7 +1609,7 @@ def _resolve_portal_route(
             "eligible": True,
         }
 
-    if indian_document and ("watch keeping" in name or "etr" in name or "ab " in name):
+    if indian_document and re.search(r"\bwatch\s*keeping\b|\bwatchkeeping\b|\betr\b|\bab\b", name):
         return {
             "portal": "DG Shipping India",
             "portalLabel": "DG Shipping Watchkeeping / AB / ETR Checker",
