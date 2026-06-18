@@ -39,13 +39,31 @@ def test_batch_portal_verification_resolves_pending_documents():
 
     batch = client.post("/api/crew/c003/verify-portal-batch", headers=headers)
     assert batch.status_code == 200
-    assert batch.json()["verifiedCount"] == 3
+    assert batch.json()["manualCount"] == 3
+    assert batch.json()["failedCount"] == 0
 
     after = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert after["summary"]["pendingVerification"] == 0
+    assert after["summary"]["pendingVerification"] == 3
 
     ai = client.post("/api/ai/check/c003", headers=headers).json()
-    assert ai["overallStatus"] == "green"
+    assert ai["overallStatus"] == "yellow"
+
+
+def test_verify_portal_returns_official_route_details():
+    response = client.post(
+        "/api/crew/c003/verify-portal",
+        json={
+            "docName": "Certificate of Competency (Chief Officer)",
+            "docNo": "IND-COC-CO-2018",
+            "issueAuthority": "India",
+        },
+        headers=auth_headers("ops", "CrewlinkOps!23"),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["verificationMode"] == "manual"
+    assert data["portal"] == "DG Shipping India"
+    assert "COCSearch.jsp" in data["portalUrl"]
 
 
 def test_remark_and_override_are_logged():

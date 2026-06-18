@@ -85,12 +85,17 @@ export interface PortalVerificationResult {
   verified: boolean
   message: string
   portal: string
+  portalLabel?: string
+  portalUrl?: string
+  verificationMode?: 'auto' | 'manual' | 'directory'
+  requiredInputs?: string[]
 }
 
 export interface PortalBatchResult {
   crewId: string
   verifiedCount: number
   failedCount: number
+  manualCount: number
   results: PortalVerificationResult[]
   summary: ChecklistSummary
 }
@@ -160,7 +165,7 @@ export interface IntegrationStatus {
   portal: {
     provider: string
     configured: boolean
-    mode: 'mock' | 'external'
+    mode: 'directory-routed' | 'external'
   }
   ai: {
     provider: string

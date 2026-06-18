@@ -188,7 +188,9 @@ export default function ChecklistModal({ member, onClose }: Props) {
         })
         return next
       })
-      setPortalSummary(`Portal verification complete: ${batch.verifiedCount} verified, ${batch.failedCount} failed.`)
+      setPortalSummary(
+        `Portal verification complete: ${batch.verifiedCount} verified, ${batch.manualCount} routed to official portals, ${batch.failedCount} failed.`,
+      )
       await handleAICheck()
     } finally {
       setPortalRunning(false)

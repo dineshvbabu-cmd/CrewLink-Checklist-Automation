@@ -164,21 +164,42 @@ export default function PreDepartureTab({
                         <td>
                           {isMissing ? (
                             <span className="text-gray-400 text-xs">-</span>
-                          ) : item.verifiedOps ? (
-                            <span className="tick-verified" title="Ops Verified">OK</span>
-                          ) : verifyResult ? (
-                            <div>
-                              <span
-                                style={{ color: verifyResult.verified ? '#27ae60' : '#e74c3c' }}
-                                className="text-xs"
-                              >
-                                {verifyResult.verified ? 'Verified' : 'Not found'}
-                              </span>
-                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
-                                {verifyResult.message}
-                              </div>
+                        ) : item.verifiedOps ? (
+                          <span className="tick-verified" title="Ops Verified">OK</span>
+                        ) : verifyResult ? (
+                          <div>
+                            <span
+                              style={{
+                                color:
+                                  verifyResult.verificationMode === 'manual' || verifyResult.verificationMode === 'directory'
+                                    ? '#f39c12'
+                                    : verifyResult.verified
+                                      ? '#27ae60'
+                                      : '#e74c3c',
+                              }}
+                              className="text-xs"
+                            >
+                              {verifyResult.verificationMode === 'manual' || verifyResult.verificationMode === 'directory'
+                                ? 'Portal route ready'
+                                : verifyResult.verified
+                                  ? 'Verified'
+                                  : 'Not found'}
+                            </span>
+                            <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
+                              {verifyResult.message}
                             </div>
-                          ) : (
+                            {verifyResult.portalUrl && (
+                              <a
+                                href={verifyResult.portalUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="link-blue text-[10px]"
+                              >
+                                Open {verifyResult.portalLabel || verifyResult.portal}
+                              </a>
+                            )}
+                          </div>
+                        ) : (
                             <button
                               onClick={() => onVerifyDocument(item.name, item.docNo)}
                               disabled={verifyingDoc === item.name}

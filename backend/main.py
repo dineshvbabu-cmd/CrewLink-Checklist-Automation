@@ -442,6 +442,15 @@ VESSEL_MATRIX = {
     ],
 }
 
+DEFAULT_PORTAL_LINKS = {
+    "uk_mca_coc": "https://coccec.mcga.gov.uk/",
+    "dg_shipping_home": "https://www.dgshipping.gov.in/",
+    "dg_shipping_cdc": "http://220.156.189.33/IndosApplication/Indos/CDCChecker.jsp",
+    "dg_shipping_coc": "http://220.156.189.33/esamudraUI/jsp/examination/checker/COCSearch.jsp?hidProcessId=COC",
+    "dg_shipping_indos": "http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp",
+    "imo_gisis_directory": "https://gisis.imo.org/Public/CP/Browse.aspx?List=CV9&Function=2%20IMO%20Web%20Accounts",
+}
+
 
 def _clone_document_bundle(template_crew_id: str, replacements: Dict[str, str]) -> Dict[str, Any]:
     bundle = deepcopy(BASE_DOCUMENTS[template_crew_id])
@@ -617,7 +626,7 @@ def require_user(roles: Optional[set[str]] = None):
 
 
 def _portal_configuration() -> Dict[str, Any]:
-    provider = os.environ.get("PORTAL_PROVIDER", "mock")
+    provider = os.environ.get("PORTAL_PROVIDER", "official-portal-routing")
     base_url = os.environ.get("PORTAL_API_BASE_URL", "").rstrip("/")
     return {
         "provider": provider,
@@ -625,6 +634,17 @@ def _portal_configuration() -> Dict[str, Any]:
         "baseUrl": base_url,
         "storagePath": data_dir(),
         "databasePath": db_path(),
+    }
+
+
+def _portal_links() -> Dict[str, str]:
+    return {
+        "uk_mca_coc": os.environ.get("UK_MCA_COC_PORTAL_URL", DEFAULT_PORTAL_LINKS["uk_mca_coc"]).strip(),
+        "dg_shipping_home": os.environ.get("DG_SHIPPING_PORTAL_URL", DEFAULT_PORTAL_LINKS["dg_shipping_home"]).strip(),
+        "dg_shipping_cdc": os.environ.get("DG_SHIPPING_CDC_CHECKER_URL", DEFAULT_PORTAL_LINKS["dg_shipping_cdc"]).strip(),
+        "dg_shipping_coc": os.environ.get("DG_SHIPPING_COC_CHECKER_URL", DEFAULT_PORTAL_LINKS["dg_shipping_coc"]).strip(),
+        "dg_shipping_indos": os.environ.get("DG_SHIPPING_INDOS_CHECKER_URL", DEFAULT_PORTAL_LINKS["dg_shipping_indos"]).strip(),
+        "imo_gisis_directory": os.environ.get("IMO_GISIS_CERTIFICATE_DIRECTORY_URL", DEFAULT_PORTAL_LINKS["imo_gisis_directory"]).strip(),
     }
 
 
@@ -721,6 +741,76 @@ def _find_confirmation_item(crew_id: str, sr_no: int) -> Dict[str, Any]:
         if item["srNo"] == sr_no:
             return item
     raise HTTPException(status_code=404, detail="Confirmation item not found")
+
+
+def _resolve_portal_route(
+    crew_id: str,
+    doc_name: str,
+    doc_no: str = "",
+    issue_authority: Optional[str] = None,
+) -> Dict[str, Any]:
+    crew = _find_crew_member(crew_id)
+    links = _portal_links()
+    authority = (issue_authority or "").strip().lower()
+    name = doc_name.lower()
+    number = doc_no.upper()
+
+    indian_document = (
+        authority in {"india", "dg shipping", "indos", "mmd"}
+        or crew["nationality"].lower() == "indian"
+        or number.startswith(("IND-", "MUM", "KOL", "CHN"))
+        or "indos" in name
+    )
+    uk_document = authority in {"uk", "united kingdom", "mca"} or "mca" in name or "fse" in name
+
+    if uk_document:
+        return {
+            "portal": "UK MCA",
+            "portalLabel": "UK CoC / FSE Checker",
+            "portalUrl": links["uk_mca_coc"],
+            "verificationMode": "manual",
+            "requiredInputs": ["Document ID", "Seafarer date of birth"],
+            "message": "Open the UK MCA CoC/FSE checker and validate the document ID against the seafarer's date of birth.",
+        }
+
+    if indian_document and ("cdc" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping CDC Checker",
+            "portalUrl": links["dg_shipping_cdc"],
+            "verificationMode": "manual",
+            "requiredInputs": ["CDC number", "Seafarer date of birth"],
+            "message": "Open the DG Shipping CDC Checker and validate the CDC number against the seafarer's date of birth.",
+        }
+
+    if indian_document and ("certificate of competency" in name or "officer in charge" in name or "coc" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping CoC Checker",
+            "portalUrl": links["dg_shipping_coc"],
+            "verificationMode": "manual",
+            "requiredInputs": ["Certificate number"],
+            "message": "Open the DG Shipping CoC Checker and verify the certificate number.",
+        }
+
+    if indian_document and ("indos" in name or "cop" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping INDoS / CoP Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "manual",
+            "requiredInputs": ["Passport / INDoS / CoP details"],
+            "message": "Open the DG Shipping INDoS / CoP Checker and validate the seafarer's record.",
+        }
+
+    return {
+        "portal": "IMO GISIS",
+        "portalLabel": "IMO GISIS Certificate Verification Directory",
+        "portalUrl": links["imo_gisis_directory"],
+        "verificationMode": "directory",
+        "requiredInputs": ["Flag state or issuing authority", "Document number", "Seafarer details"],
+        "message": "Open the IMO GISIS directory and use the relevant flag-state verification website for this document.",
+    }
 
 
 def _append_audit(crew_id: str, actor: str, action: str, target: str, message: str) -> None:
@@ -827,6 +917,10 @@ async def _build_portal_response(
                 "verified": bool(payload.get("verified")),
                 "message": payload.get("message") or f"{doc_name} verified via {portal_configuration['provider']}.",
                 "portal": payload.get("portal") or portal_configuration["provider"],
+                "portalLabel": payload.get("portalLabel") or payload.get("portal") or portal_configuration["provider"],
+                "portalUrl": payload.get("portalUrl") or portal_configuration["baseUrl"],
+                "verificationMode": "auto",
+                "requiredInputs": payload.get("requiredInputs") or [],
             }
         except Exception as exc:
             return {
@@ -834,21 +928,21 @@ async def _build_portal_response(
                 "verified": False,
                 "message": f"{portal_configuration['provider']} integration failed: {exc}",
                 "portal": portal_configuration["provider"],
+                "portalLabel": portal_configuration["provider"],
+                "portalUrl": portal_configuration["baseUrl"],
+                "verificationMode": "auto",
+                "requiredInputs": [],
             }
-
-    if crew_id == "c002" and "Flag CDC" in doc_name:
-        return {
-            "docName": doc_name,
-            "verified": False,
-            "message": "Not found on DG portal - document not registered.",
-            "portal": "DG Shipping India",
-        }
-
+    route = _resolve_portal_route(crew_id, doc_name, doc_no, issue_authority)
     return {
         "docName": doc_name,
-        "verified": True,
-        "message": f"Valid as per DG records - {doc_name} is in order.",
-        "portal": "DG Shipping India",
+        "verified": False,
+        "message": route["message"],
+        "portal": route["portal"],
+        "portalLabel": route["portalLabel"],
+        "portalUrl": route["portalUrl"],
+        "verificationMode": route["verificationMode"],
+        "requiredInputs": route["requiredInputs"],
     }
 
 
@@ -1206,7 +1300,7 @@ def get_integrations_status(current_user: Dict[str, Any] = Depends(require_user(
         "portal": {
             "provider": portal_configuration["provider"],
             "configured": portal_configuration["configured"],
-            "mode": "external" if portal_configuration["configured"] else "mock",
+            "mode": "external" if portal_configuration["configured"] else "directory-routed",
         },
         "ai": {
             "provider": ai_configuration["provider"],
@@ -1481,11 +1575,14 @@ async def verify_portal_batch(
     results = []
     verified_count = 0
     failed_count = 0
+    manual_count = 0
 
     for item in items_to_verify:
         result = await _build_portal_response(crew_id, item["name"], item.get("docNo", ""))
         _apply_portal_result(crew_id, item, result)
-        if result["verified"]:
+        if result.get("verificationMode") in {"manual", "directory"} and not result["verified"]:
+            manual_count += 1
+        elif result["verified"]:
             verified_count += 1
         else:
             failed_count += 1
@@ -1496,7 +1593,7 @@ async def verify_portal_batch(
         actor=current_user["fullName"],
         action="batch_verification",
         target="Pending documents",
-        message=f"Batch verification completed: {verified_count} verified, {failed_count} failed.",
+        message=f"Batch verification completed: {verified_count} verified, {manual_count} routed to portal, {failed_count} failed.",
     )
     persist_state()
 
@@ -1504,6 +1601,7 @@ async def verify_portal_batch(
         "crewId": crew_id,
         "verifiedCount": verified_count,
         "failedCount": failed_count,
+        "manualCount": manual_count,
         "results": results,
         "summary": STATE["documents"][crew_id]["summary"],
     }
