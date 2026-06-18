@@ -20,9 +20,11 @@ import type {
 } from './types'
 
 const BASE = import.meta.env.VITE_API_URL || '/api'
+const STORAGE_KEY = 'crewlink_auth_token'
 
 const api = axios.create({ baseURL: BASE })
 let authToken = ''
+let redirectingForExpiredSession = false
 
 export function setAuthToken(token: string | null) {
   authToken = token || ''
@@ -32,6 +34,45 @@ export function setAuthToken(token: string | null) {
     delete api.defaults.headers.common.Authorization
   }
 }
+
+function clearExpiredSession() {
+  if (typeof window === 'undefined') {
+    setAuthToken(null)
+    return
+  }
+
+  window.localStorage.removeItem(STORAGE_KEY)
+  setAuthToken(null)
+
+  if (redirectingForExpiredSession || window.location.pathname.startsWith('/login')) {
+    return
+  }
+
+  redirectingForExpiredSession = true
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  window.location.replace(`/login?reason=session-expired&next=${encodeURIComponent(next)}`)
+}
+
+api.interceptors.response.use(
+  response => response,
+  error => {
+    const status = error.response?.status
+    const url = String(error.config?.url || '')
+    const hasSession = Boolean(authToken)
+    const isLoginRequest = url.includes('/auth/login')
+    const message =
+      error.response?.data?.detail ||
+      error.response?.data?.message ||
+      error.message ||
+      'Request failed.'
+
+    if (status === 401 && hasSession && !isLoginRequest) {
+      clearExpiredSession()
+    }
+
+    return Promise.reject(new Error(message))
+  },
+)
 
 export const getExportChecklistUrl = (crewId: string) => `${BASE}/crew/${crewId}/export-checklist`
 export const login = (username: string, password: string): Promise<LoginResponse> => api.post('/auth/login', { username, password }).then(response => response.data)
@@ -83,5 +124,5 @@ export const submitSelfServicePacket = (
 ): Promise<SelfServicePacket> => api.post(`/self-service/${token}/submit`, payload).then(response => response.data)
 
 if (typeof window !== 'undefined') {
-  setAuthToken(window.localStorage.getItem('crewlink_auth_token'))
+  setAuthToken(window.localStorage.getItem(STORAGE_KEY))
 }

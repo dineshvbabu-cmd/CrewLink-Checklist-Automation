@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth'
 
 const DEMO_USERS = [
@@ -10,13 +10,16 @@ const DEMO_USERS = [
 
 export default function LoginPage() {
   const { user, login } = useAuth()
+  const [searchParams] = useSearchParams()
   const [username, setUsername] = useState('rc')
   const [password, setPassword] = useState('CrewlinkRC!23')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const expiredSession = searchParams.get('reason') === 'session-expired'
+  const nextPath = searchParams.get('next') || '/'
 
   if (user) {
-    return <Navigate to="/" replace />
+    return <Navigate to={nextPath} replace />
   }
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -66,6 +69,12 @@ export default function LoginPage() {
           <div className="text-sm font-semibold text-slate-500 uppercase tracking-[0.18em]">Sign In</div>
           <h2 className="mt-2 mb-1 text-2xl font-bold text-slate-900">Access the checklist workspace</h2>
           <p className="m-0 text-sm text-slate-500">Use an RC, Ops, or Admin role to test the role-aware workflow.</p>
+
+          {expiredSession && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Your session expired after a backend restart or login timeout. Sign in again to continue.
+            </div>
+          )}
 
           <form className="mt-8 grid gap-4" onSubmit={handleSubmit}>
             <label className="grid gap-2 text-sm text-slate-600">
