@@ -181,7 +181,27 @@ export interface IntegrationStatus {
     databasePath: string
     uploadsPath: string
   }
+  crewlink: {
+    configured: boolean
+    apiBaseUrl: string
+    vesselId: number | null
+  }
   user: string
+}
+
+export interface CrewlinkStatus {
+  configured: boolean
+  apiBaseUrl: string
+  webBaseUrl: string
+  vesselId: number | null
+  hasToken: boolean
+}
+
+export interface CrewlinkImportResponse {
+  ok: boolean
+  vessel: Vessel
+  importedCrew: number
+  crewIds: string[]
 }
 
 export interface CrewReport {

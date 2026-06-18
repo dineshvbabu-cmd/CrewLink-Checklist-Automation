@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Bot, Download, Filter, RefreshCw } from 'lucide-react'
-import type { AICheckResult, CrewMember, Vessel } from '../types'
-import { getCrew, getVessel, runAICheck } from '../api'
+import { useAuth } from '../auth'
+import type { AICheckResult, CrewMember, CrewlinkStatus, Vessel } from '../types'
+import { getCrew, getCrewlinkStatus, getVessel, importCrewlinkData, runAICheck } from '../api'
 import ChecklistModal from '../components/Checklist/ChecklistModal'
 import CrewTable from '../components/CrewList/CrewTable'
 import LegendBar from '../components/CrewList/LegendBar'
@@ -23,8 +24,10 @@ const FILTER_LABELS: Record<StatusFilter, string> = {
 }
 
 export default function CrewListPage() {
+  const { user } = useAuth()
   const [vessel, setVessel] = useState<Vessel | null>(null)
   const [crew, setCrew] = useState<CrewMember[]>([])
+  const [crewlinkStatus, setCrewlinkStatus] = useState<CrewlinkStatus | null>(null)
   const [activeTab, setActiveTab] = useState('Crew List')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -35,6 +38,11 @@ export default function CrewListPage() {
   const [runningAll, setRunningAll] = useState(false)
   const [runningSelected, setRunningSelected] = useState(false)
   const [lastRunTime, setLastRunTime] = useState<string | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [importVesselId, setImportVesselId] = useState('')
+  const [importMaxCrew, setImportMaxCrew] = useState('10')
 
   const loadData = async () => {
     const [vesselData, crewData] = await Promise.all([getVessel(), getCrew()])
@@ -48,10 +56,18 @@ export default function CrewListPage() {
     })
   }
 
+  const loadCrewlinkStatus = async () => {
+    const status = await getCrewlinkStatus()
+    setCrewlinkStatus(status)
+    setImportVesselId(status.vesselId ? String(status.vesselId) : '')
+  }
+
   useEffect(() => {
-    loadData()
+    Promise.all([loadData(), loadCrewlinkStatus()])
       .finally(() => setLoading(false))
   }, [])
+
+  const canImportCrewlink = user?.role === 'admin' || user?.role === 'ops'
 
   const visibleCrew = useMemo(
     () => (statusFilter === 'all' ? crew : crew.filter(member => member.aiStatus === statusFilter)),
@@ -139,9 +155,37 @@ export default function CrewListPage() {
   const handleRefresh = async () => {
     setLoading(true)
     try {
-      await loadData()
+      await Promise.all([loadData(), loadCrewlinkStatus()])
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleImportCrewlink = async () => {
+    setImportBusy(true)
+    setImportError(null)
+    setImportMessage(null)
+    try {
+      const payload: { vesselId?: number; maxCrew?: number; replaceState: boolean } = { replaceState: true }
+      const parsedVesselId = Number(importVesselId)
+      const parsedMaxCrew = Number(importMaxCrew)
+      if (Number.isFinite(parsedVesselId) && parsedVesselId > 0) {
+        payload.vesselId = parsedVesselId
+      }
+      if (Number.isFinite(parsedMaxCrew) && parsedMaxCrew > 0) {
+        payload.maxCrew = parsedMaxCrew
+      }
+
+      const result = await importCrewlinkData(payload)
+      await Promise.all([loadData(), loadCrewlinkStatus()])
+      setSelectedMember(null)
+      setAiResults({})
+      setImportMessage(`Imported ${result.importedCrew} crew from ${result.vessel.name}.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Crewlink import failed.'
+      setImportError(message)
+    } finally {
+      setImportBusy(false)
     }
   }
 
@@ -190,6 +234,75 @@ export default function CrewListPage() {
       {activeTab === 'Crew List' ? (
         <>
           <LegendBar vessel={vessel} />
+
+          {canImportCrewlink && (
+            <div className="mx-3 mt-3 rounded border border-slate-200 bg-white shadow-sm">
+              <div className="border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">Live Crewlink Import</div>
+                  <div className="text-xs text-slate-500">
+                    Pull the latest vessel crew and checklist data from Crewlink into this workspace.
+                  </div>
+                </div>
+                <div className={`text-xs font-medium ${crewlinkStatus?.configured ? 'text-emerald-700' : 'text-amber-700'}`}>
+                  {crewlinkStatus?.configured ? 'Configured' : 'Not configured'}
+                </div>
+              </div>
+
+              <div className="px-4 py-3 grid gap-3 lg:grid-cols-[1.2fr,0.8fr,auto] items-end">
+                <label className="grid gap-1 text-xs text-slate-600">
+                  Vessel ID
+                  <input
+                    value={importVesselId}
+                    onChange={event => setImportVesselId(event.target.value)}
+                    placeholder="Use configured vessel if blank"
+                    className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </label>
+
+                <label className="grid gap-1 text-xs text-slate-600">
+                  Max Crew
+                  <input
+                    value={importMaxCrew}
+                    onChange={event => setImportMaxCrew(event.target.value)}
+                    className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </label>
+
+                <button
+                  onClick={() => void handleImportCrewlink()}
+                  disabled={importBusy || !crewlinkStatus?.configured}
+                  className="rounded bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
+                >
+                  {importBusy ? 'Importing...' : 'Import from Crewlink'}
+                </button>
+              </div>
+
+              <div className="px-4 pb-4 text-xs text-slate-500">
+                API: {crewlinkStatus?.apiBaseUrl ?? 'Loading...'}
+                {crewlinkStatus?.vesselId ? ` | Default vessel: ${crewlinkStatus.vesselId}` : ''}
+              </div>
+
+              {importError && (
+                <div className="mx-4 mb-4 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  {importError}
+                </div>
+              )}
+
+              {!crewlinkStatus?.configured && (
+                <div className="mx-4 mb-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Crewlink import is not configured on the server yet. Add `CREWLINK_API_TOKEN` and `CREWLINK_VESSEL_ID`
+                  in Railway variables, then refresh this page.
+                </div>
+              )}
+
+              {importMessage && (
+                <div className="mx-4 mb-4 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                  {importMessage}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2 flex-wrap">

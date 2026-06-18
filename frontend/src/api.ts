@@ -6,6 +6,8 @@ import type {
   ConfirmationItem,
   CrewMember,
   CrewReport,
+  CrewlinkImportResponse,
+  CrewlinkStatus,
   DocumentsData,
   ExtractionReport,
   IntegrationStatus,
@@ -36,6 +38,9 @@ export const login = (username: string, password: string): Promise<LoginResponse
 export const getCurrentUser = (): Promise<AuthUser> => api.get('/auth/me').then(response => response.data)
 export const logout = (): Promise<{ ok: boolean }> => api.post('/auth/logout').then(response => response.data)
 export const getIntegrationStatus = (): Promise<IntegrationStatus> => api.get('/integrations/status').then(response => response.data)
+export const getCrewlinkStatus = (): Promise<CrewlinkStatus> => api.get('/integrations/crewlink/status').then(response => response.data)
+export const importCrewlinkData = (payload: { vesselId?: number; maxCrew?: number; replaceState?: boolean }): Promise<CrewlinkImportResponse> =>
+  api.post('/integrations/crewlink/import', payload).then(response => response.data)
 
 export const getVessel = (): Promise<Vessel> => api.get('/vessel').then(response => response.data)
 export const getCrew = (): Promise<CrewMember[]> => api.get('/crew').then(response => response.data)
