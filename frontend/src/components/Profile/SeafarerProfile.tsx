@@ -321,10 +321,11 @@ function ComplianceView({ member, docs }: { member: CrewMember; docs: DocumentsD
       </div>
 
       {docs && (
-        <div className="grid md:grid-cols-4 gap-3 mb-4">
+        <div className="grid md:grid-cols-5 gap-3 mb-4">
           {[
             { label: 'Valid & Verified', count: docs.summary.valid, color: '#27ae60' },
-            { label: 'Pending Verification', count: docs.summary.pendingVerification, color: '#f39c12' },
+            { label: 'Checklist Pending', count: docs.summary.checklistPending ?? 0, color: '#f39c12' },
+            { label: 'Portal Pending', count: docs.summary.portalPending ?? 0, color: '#e67e22' },
             { label: 'Missing Documents', count: docs.summary.missing, color: '#e74c3c' },
             { label: 'Expired', count: docs.summary.expired, color: '#e74c3c' },
           ].map(card => (

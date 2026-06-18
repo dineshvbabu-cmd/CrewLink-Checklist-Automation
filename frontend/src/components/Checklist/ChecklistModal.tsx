@@ -43,35 +43,6 @@ interface Props {
 
 const TABS = ['Pre Departure', 'Seafarer Confirmation', 'Departure (Ops)']
 
-function applyVerificationResult(currentDocs: DocumentsData, result: PortalVerificationResult): DocumentsData {
-  const nextSections = currentDocs.sections.map(section => ({
-    ...section,
-    items: section.items.map(item =>
-      item.name === result.docName
-        ? {
-            ...item,
-            verifiedOps: result.verified,
-            portalVerified: result.verified,
-            aiStatus: result.recommendedAiStatus || (result.verified && item.aiStatus === 'yellow' ? 'green' : item.aiStatus),
-            remark: result.message || item.remark,
-          }
-        : item,
-    ),
-  }))
-
-  const allItems = nextSections.flatMap(section => section.items)
-
-  return {
-    ...currentDocs,
-    sections: nextSections,
-    summary: {
-      ...currentDocs.summary,
-      pendingVerification: allItems.filter(item => item.aiStatus === 'yellow' && !item.missing).length,
-      valid: allItems.filter(item => item.aiStatus === 'green' && item.required !== false).length,
-    },
-  }
-}
-
 function countPortalQueues(data: DocumentsData | null) {
   const counts = { autoPending: 0, manualPending: 0 }
   if (!data) {
@@ -80,12 +51,9 @@ function countPortalQueues(data: DocumentsData | null) {
 
   data.sections.forEach(section => {
     section.items.forEach(item => {
-      if (item.aiStatus !== 'yellow' || item.missing || item.portalVerified) {
-        return
-      }
-      if (item.portalRoute?.autoCapable) {
+      if (item.portalStatus === 'pending') {
         counts.autoPending += 1
-      } else if (item.portalRoute?.eligible) {
+      } else if (item.portalStatus === 'manual_review') {
         counts.manualPending += 1
       }
     })
@@ -193,7 +161,6 @@ export default function ChecklistModal({ member, onClose }: Props) {
       const result = await verifyPortal(member.id, docName, docNo)
       setVerificationResults(previous => ({ ...previous, [docName]: result }))
       setPortalSummary(result.message)
-      setDocs(previous => (previous ? applyVerificationResult(previous, result) : previous))
       await handleAICheck()
     } finally {
       setVerifyingDoc(null)

@@ -39,7 +39,8 @@ def test_ai_check_returns_matrix_driven_summary():
 def test_batch_portal_verification_resolves_pending_documents():
     headers = auth_headers("ops", "CrewlinkOps!23")
     before = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert before["summary"]["pendingVerification"] == 3
+    assert before["summary"]["pendingVerification"] == 2
+    assert before["summary"]["portalPending"] == 2
 
     batch = client.post("/api/crew/c003/verify-portal-batch", headers=headers)
     assert batch.status_code == 200
@@ -47,7 +48,8 @@ def test_batch_portal_verification_resolves_pending_documents():
     assert batch.json()["failedCount"] == 1
 
     after = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert after["summary"]["pendingVerification"] == 3
+    assert after["summary"]["pendingVerification"] == 2
+    assert after["summary"]["portalPending"] == 2
 
     ai = client.post("/api/ai/check/c003", headers=headers).json()
     assert ai["overallStatus"] == "yellow"
@@ -156,13 +158,36 @@ def test_remark_and_override_are_logged():
         headers=ops_headers,
     )
     assert override.status_code == 200
-    assert override.json()["item"]["aiStatus"] == "green"
+    assert override.json()["item"]["overrideStatus"] == "green"
     assert override.json()["item"]["overrideReason"] == "Temporary flag waiver approved"
     assert override.json()["item"]["missing"] is False
-    assert override.json()["item"]["verifiedOps"] is True
+    assert override.json()["item"]["portalVerified"] is False
 
     audit = client.get("/api/crew/c002/audit-log", headers=ops_headers).json()
     assert any(entry["action"] == "override" for entry in audit)
+
+
+def test_documents_payload_exposes_distinct_checklist_and_portal_statuses():
+    response = client.get("/api/crew/c003/documents", headers=auth_headers("ops", "CrewlinkOps!23"))
+
+    assert response.status_code == 200
+    competency = next(
+        item
+        for section in response.json()["sections"]
+        for item in section["items"]
+        if item["name"] == "Certificate of Competency (Chief Officer)"
+    )
+    interview_sheet = next(
+        item
+        for section in response.json()["sections"]
+        for item in section["items"]
+        if item["name"] == "Interview Sheet (FP01D)"
+    )
+
+    assert competency["checklistStatus"] == "good"
+    assert competency["portalStatus"] == "pending"
+    assert interview_sheet["checklistStatus"] == "good"
+    assert interview_sheet["portalStatus"] == "not_applicable"
 
 
 def test_self_service_submission_updates_confirmation():

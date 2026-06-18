@@ -24,12 +24,14 @@ function downloadTextReport(result: AICheckResult) {
     `${result.rank} | ${result.vessel} | ${result.flag}`,
     '',
     `Valid and verified: ${result.summary.valid}`,
-    `Pending portal verification: ${result.summary.pendingVerification}`,
+    `Checklist pending: ${result.summary.checklistPending ?? 0}`,
+    `Portal pending: ${result.summary.portalPending ?? 0}`,
     `Missing: ${result.summary.missing}`,
     `Expired: ${result.summary.expired}`,
     '',
     `Missing items: ${result.missingItems.join(', ') || 'None'}`,
-    `Pending items: ${result.pendingItems.join(', ') || 'None'}`,
+    `Checklist pending items: ${result.checklistPendingItems?.join(', ') || 'None'}`,
+    `Portal pending items: ${result.portalPendingItems?.join(', ') || 'None'}`,
     `Expired items: ${result.expiredItems.join(', ') || 'None'}`,
     '',
     result.aiNarrative,
@@ -99,8 +101,9 @@ export default function AIPanel({
             <div>
               <div className="flex gap-6 mb-3 flex-wrap">
                 <Metric status="green" count={result.summary.valid} label="documents - Valid and verified" />
-                <Metric status="yellow" count={result.summary.pendingVerification} label="documents - Pending verification / review" />
-                <Metric status="red" count={result.summary.missing} label="items - Missing or expired" />
+                <Metric status="yellow" count={result.summary.checklistPending ?? 0} label="documents - Checklist review pending" />
+                <Metric status="yellow" count={result.summary.portalPending ?? 0} label="documents - Portal verification pending" />
+                <Metric status="red" count={result.summary.missing + result.summary.expired} label="items - Missing or expired" />
               </div>
 
               {result.missingItems.length > 0 && (
@@ -109,10 +112,16 @@ export default function AIPanel({
                   <span className="text-xs text-gray-700">{result.missingItems.join(' | ')}</span>
                 </div>
               )}
-              {result.pendingItems.length > 0 && (
+              {(result.checklistPendingItems?.length ?? 0) > 0 && (
                 <div className="mb-2">
-                  <span style={{ color: '#f39c12' }} className="font-semibold text-xs">Pending: </span>
-                  <span className="text-xs text-gray-600">{result.pendingItems.join(' | ')}</span>
+                  <span style={{ color: '#f39c12' }} className="font-semibold text-xs">Checklist pending: </span>
+                  <span className="text-xs text-gray-600">{result.checklistPendingItems?.join(' | ')}</span>
+                </div>
+              )}
+              {(result.portalPendingItems?.length ?? 0) > 0 && (
+                <div className="mb-2">
+                  <span style={{ color: '#c56a16' }} className="font-semibold text-xs">Portal pending: </span>
+                  <span className="text-xs text-gray-600">{result.portalPendingItems?.join(' | ')}</span>
                 </div>
               )}
 
@@ -122,9 +131,9 @@ export default function AIPanel({
               </div>
 
               <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                {autoVerificationPendingCount} document(s) can be auto-verified through supported portals.
+                {autoVerificationPendingCount} document(s) can run through portal automation.
                 {' '}
-                {manualReviewPendingCount} document(s) still require manual portal review or Ops review.
+                {manualReviewPendingCount} document(s) still require manual portal review.
               </div>
 
               <div className="grid md:grid-cols-2 gap-3 mt-3">

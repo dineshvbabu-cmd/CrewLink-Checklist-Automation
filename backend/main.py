@@ -40,6 +40,8 @@ from persistence import (
 )
 
 AIStatus = Literal["green", "yellow", "red", "grey"]
+ChecklistStatus = Literal["good", "pending", "missing", "not_applicable"]
+PortalStatus = Literal["verified", "pending", "manual_review", "not_applicable", "blocked"]
 
 app = FastAPI(title="Crewlink AI-ACE Demo")
 
@@ -900,12 +902,181 @@ CREWLINK_CHECKLIST_SECTIONS = [
     ("Medical", "medical", "Checklist/chkOnSelMedical"),
 ]
 
+CREWLINK_MATRIX_ENDPOINTS = {
+    "license": {
+        "vessel": "VesselLicenseMatrix/filter",
+        "type": "VesselLicenseMatrix/filterLicenseMatrix",
+    },
+    "course": {
+        "vessel": "VesselCourseMatrix/filter",
+        "type": "VesselCourseMatrix/filterCourse",
+        "company_type": "VesselCourseMatrix/filterCompanyCourse",
+    },
+    "checklist": {
+        "vessel": "VesselChecklistMatrix/filter",
+        "type": "VesselChecklistMatrix/filterchecklistMatrix",
+    },
+}
+
 
 def _crewlink_has_value(value: Any) -> bool:
     if value is None:
         return False
     text = str(value).strip()
     return bool(text and text.lower() not in {"na", "n/a", "nil", "null"})
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _nested_value(payload: Any, path: str) -> Any:
+    current = payload
+    for segment in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+    return current
+
+
+def _first_nested_value(payload: Dict[str, Any], paths: List[str]) -> Any:
+    for path in paths:
+        value = _nested_value(payload, path)
+        if _crewlink_has_value(value):
+            return value
+    return None
+
+
+def _section_title_for_requirement(name: str, kind: str = "checklist") -> str:
+    lowered = (name or "").lower()
+    if "passport" in lowered or lowered == "indos number" or "yellow fever" in lowered:
+        return "Travel Documents"
+    if kind == "license" or "flag cdc" in lowered or "i/10" in lowered or "gmdss" in lowered or "competency" in lowered:
+        return "License (National & Flag)"
+    if kind == "course":
+        if "ecdis - jrc" in lowered or "type specific" in lowered or "oil tanker cargo operations" in lowered:
+            return "Company Courses (Vessel Specific)"
+        if "security training" in lowered or "personal safety" in lowered or "pssr" in lowered:
+            return "STCW Basic Courses"
+        return "STCW Courses"
+    if "employment" in lowered or "offer letter" in lowered or "interview sheet" in lowered or "undertaking" in lowered or "briefing" in lowered or "terms of employment" in lowered:
+        return "Other Documents / Pre-joining Docs"
+    if "medical" in lowered or "yellow fever" in lowered:
+        return "Medical"
+    return "Other Documents / Pre-joining Docs" if kind == "checklist" else "STCW Courses"
+
+
+def _normalize_requirement_name(raw_name: str, kind: str) -> str:
+    cleaned = _crewlink_checklist_name(str(raw_name or "").strip())
+    if not cleaned:
+        return ""
+    if kind == "license":
+        return _crewlink_license_to_name({"licenseName": cleaned})
+    aliases = {
+        "passport no": "Passport",
+        "passport": "Passport",
+        "cdc": "CDC (Continuous Discharge Certificate)",
+        "continuous discharge certificate": "CDC (Continuous Discharge Certificate)",
+        "indos no": "INDoS Number",
+        "indos number": "INDoS Number",
+        "yellow fever cert": "Yellow Fever Certificate",
+    }
+    return aliases.get(cleaned.lower(), cleaned)
+
+
+def _matrix_requirement_from_name(name: str, kind: str, source: str) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "kind": kind,
+        "sectionTitle": _section_title_for_requirement(name, kind),
+        "typeLabel": _doc_type_from_name(name),
+        "source": source,
+    }
+
+
+def _matrix_requirement_from_record(record: Dict[str, Any], kind: str, source: str) -> Optional[Dict[str, Any]]:
+    candidate_paths = {
+        "license": [
+            "licenceRegister.licenceName",
+            "licenseRegister.licenceName",
+            "licenceRegister.licenseName",
+            "licenseRegister.licenseName",
+            "license.licenceName",
+            "license.licenseName",
+            "licenceName",
+            "licenseName",
+            "docName",
+            "documentName",
+            "name",
+        ],
+        "course": [
+            "courseRegister.courseName",
+            "companyCourse.courseName",
+            "course.courseName",
+            "courseName",
+            "docName",
+            "documentName",
+            "name",
+        ],
+        "checklist": [
+            "otherDocument.otherDocName",
+            "otherDocument.otherDocumentName",
+            "otherDocumentRegister.documentName",
+            "checklistDocument.documentName",
+            "documentName",
+            "docName",
+            "otherDocName",
+            "name",
+        ],
+    }
+    raw_name = _first_nested_value(record, candidate_paths.get(kind, candidate_paths["checklist"]))
+    normalized = _normalize_requirement_name(str(raw_name or ""), kind)
+    if not normalized:
+        return None
+
+    type_label = _first_nested_value(
+        record,
+        [
+            "licenceRegister.code",
+            "licenseRegister.code",
+            "courseRegister.courseType",
+            "type",
+            "documentType",
+        ],
+    )
+    return {
+        "name": normalized,
+        "kind": kind,
+        "sectionTitle": _section_title_for_requirement(normalized, kind),
+        "typeLabel": str(type_label).strip() if _crewlink_has_value(type_label) else _doc_type_from_name(normalized),
+        "source": source,
+    }
+
+
+def _merge_matrix_requirements(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            name = item.get("name", "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def _fallback_matrix_requirements(rank_code: str) -> List[Dict[str, Any]]:
+    return [
+        _matrix_requirement_from_name(name, "checklist", "seed-fallback")
+        for name in VESSEL_MATRIX.get(rank_code, [])
+    ]
 
 
 def _crewlink_checklist_name(raw_name: str) -> str:
@@ -948,6 +1119,17 @@ def _crewlink_requires_attention(text: str) -> bool:
     )
 
 
+def _looks_like_system_status_remark(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    return lowered in {
+        "pending portal verification",
+        "portal check pending",
+        "awaiting ops verification",
+        "checklist verification is pending.",
+        "document uploaded and matched to the checklist. no supported public portal is configured for this document type, so it remains under ai + human checklist review.",
+    }
+
+
 def _crewlink_effective_date(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw or raw.startswith("1900-01-01"):
@@ -968,6 +1150,7 @@ def _crewlink_item(
     type_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     status: AIStatus = "red" if missing else ("green" if verified else "yellow")
+    checklist_status: ChecklistStatus = "missing" if missing else ("good" if verified else "pending")
     return {
         "srNo": sr_no,
         "name": name,
@@ -986,6 +1169,10 @@ def _crewlink_item(
         "overrideStatus": "",
         "overrideReason": "",
         "extractionConfidence": 0.98 if verified and not missing else 0.72,
+        "hasEvidence": bool(attachment_url or _crewlink_has_value(doc_no) or issue_date),
+        "checklistAttention": not verified and not missing,
+        "checklistStatus": checklist_status,
+        "portalStatus": "not_applicable",
     }
 
 
@@ -1033,6 +1220,114 @@ async def _crewlink_try_post_json(client: httpx.AsyncClient, path: str, payload:
         return await _crewlink_post_json(client, path, payload)
     except httpx.HTTPError:
         return None
+
+
+async def _crewlink_fetch_matrix_records(
+    client: httpx.AsyncClient,
+    *,
+    rank_id: int,
+    vessel_id: int,
+    vessel_type_id: int,
+) -> Dict[str, Any]:
+    if not rank_id or not vessel_id:
+        return {
+            "requirements": [],
+            "source": "seed-fallback",
+        }
+
+    async def collect(path: str, kind: str, source: str, **params: Any) -> List[Dict[str, Any]]:
+        response = await _crewlink_try_get_json(client, path, **params)
+        if not isinstance(response, list):
+            return []
+        collected: List[Dict[str, Any]] = []
+        for record in response:
+            if not isinstance(record, dict):
+                continue
+            requirement = _matrix_requirement_from_record(record, kind, source)
+            if requirement:
+                collected.append(requirement)
+        return collected
+
+    vessel_license, vessel_course, vessel_checklist = await asyncio.gather(
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["license"]["vessel"],
+            "license",
+            "crewlink-admin-vessel",
+            rankid=rank_id,
+            vesselid=vessel_id,
+            status=0,
+        ),
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["course"]["vessel"],
+            "course",
+            "crewlink-admin-vessel",
+            rankid=rank_id,
+            vesselid=vessel_id,
+            status=0,
+        ),
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["checklist"]["vessel"],
+            "checklist",
+            "crewlink-admin-vessel",
+            rankid=rank_id,
+            vesselid=vessel_id,
+            status=0,
+        ),
+    )
+
+    direct = _merge_matrix_requirements(vessel_license, vessel_course, vessel_checklist)
+    if direct:
+        return {
+            "requirements": direct,
+            "source": "crewlink-admin-vessel",
+        }
+
+    if not vessel_type_id:
+        return {
+            "requirements": [],
+            "source": "seed-fallback",
+        }
+
+    type_license, type_course, type_company_course, type_checklist = await asyncio.gather(
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["license"]["type"],
+            "license",
+            "crewlink-admin-vessel-type",
+            rankid=rank_id,
+            vesselTypeId=vessel_type_id,
+            status=0,
+        ),
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["course"]["type"],
+            "course",
+            "crewlink-admin-vessel-type",
+            rankid=rank_id,
+            vesselTypeId=vessel_type_id,
+            status=0,
+        ),
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["course"]["company_type"],
+            "course",
+            "crewlink-admin-vessel-type",
+            rankid=rank_id,
+            vesselTypeId=vessel_type_id,
+            status=0,
+        ),
+        collect(
+            CREWLINK_MATRIX_ENDPOINTS["checklist"]["type"],
+            "checklist",
+            "crewlink-admin-vessel-type",
+            rankid=rank_id,
+            vesselTypeId=vessel_type_id,
+            status=0,
+        ),
+    )
+
+    typed = _merge_matrix_requirements(type_license, type_course, type_company_course, type_checklist)
+    return {
+        "requirements": typed,
+        "source": "crewlink-admin-vessel-type" if typed else "seed-fallback",
+    }
 
 
 def _crewlink_license_to_name(license_item: Dict[str, Any]) -> str:
@@ -1165,14 +1460,66 @@ def _crewlink_item_from_checklist(
         "required": required,
         "checklistLevel": level,
         "extractionConfidence": 0.99 if has_evidence else 0.7,
+        "hasEvidence": has_evidence,
+        "checklistAttention": pending,
+        "checklistStatus": (
+            "not_applicable"
+            if not required
+            else "missing"
+            if missing or expired
+            else "pending"
+            if pending
+            else "good"
+            if has_evidence
+            else "pending"
+        ),
+        "portalStatus": "not_applicable",
     }
     if raw_item.get("checkListId"):
         item["crewlinkChecklistId"] = raw_item["checkListId"]
     return item
 
 
+def _append_missing_matrix_requirements(
+    sections: List[Dict[str, Any]],
+    matrix_requirements: List[Dict[str, Any]],
+    sr_no: int,
+) -> int:
+    imported_names = {
+        item["name"].strip().lower()
+        for section in sections
+        for item in section["items"]
+    }
+    for requirement in matrix_requirements:
+        required_name = requirement.get("name", "").strip()
+        if not required_name or required_name.lower() in imported_names:
+            continue
+        target_title = requirement.get("sectionTitle") or _section_title_for_requirement(
+            required_name,
+            requirement.get("kind", "checklist"),
+        )
+        existing = next((section for section in sections if section["title"] == target_title), None)
+        if not existing:
+            existing = {"title": target_title, "items": []}
+            sections.append(existing)
+        existing["items"].append(
+            _crewlink_item(
+                sr_no,
+                required_name,
+                verified=False,
+                remark="Required by Crewlink vessel matrix but not found in the imported checklist.",
+                missing=True,
+                type_label=requirement.get("typeLabel") or _doc_type_from_name(required_name),
+            )
+        )
+        sr_no += 1
+        imported_names.add(required_name.lower())
+    return sr_no
+
+
 def _crewlink_build_checklist_documents(
     checklist_sections: Dict[str, List[Dict[str, Any]]],
+    matrix_requirements: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     sections: List[Dict[str, Any]] = []
     sr_no = 1
@@ -1188,6 +1535,8 @@ def _crewlink_build_checklist_documents(
 
     if not sections:
         return None
+
+    _append_missing_matrix_requirements(sections, matrix_requirements, sr_no)
 
     return {"sections": sections, "summary": {"valid": 0, "pendingVerification": 0, "missing": 0, "expired": 0}}
 
@@ -1237,9 +1586,11 @@ async def _crewlink_fetch_checklist_sections(
 def _crewlink_build_documents(
     rank_code: str,
     bundle: Dict[str, Any],
+    matrix_requirements: Optional[List[Dict[str, Any]]] = None,
     checklist_sections: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
-    checklist_docs = _crewlink_build_checklist_documents(checklist_sections or {})
+    resolved_matrix_requirements = matrix_requirements or _fallback_matrix_requirements(rank_code)
+    checklist_docs = _crewlink_build_checklist_documents(checklist_sections or {}, resolved_matrix_requirements)
     if checklist_docs:
         return checklist_docs
 
@@ -1318,32 +1669,7 @@ def _crewlink_build_documents(
     if license_items:
         sections.append({"title": "License (National & Flag)", "items": license_items})
 
-    imported_names = {item["name"] for section in sections for item in section["items"]}
-    for required_name in VESSEL_MATRIX.get(rank_code, []):
-        if required_name in imported_names or required_name in {"Passport", "CDC (Continuous Discharge Certificate)"}:
-            continue
-        target_title = "STCW Courses"
-        lower_name = required_name.lower()
-        if "flag cdc" in lower_name or "competency" in lower_name or "gmdss" in lower_name:
-            target_title = "License (National & Flag)"
-        elif "offer letter" in lower_name or "interview sheet" in lower_name or "employment" in lower_name or "undertaking" in lower_name or "briefing" in lower_name:
-            target_title = "Other Documents / Pre-joining Docs"
-        elif "security training" in lower_name or "personal safety" in lower_name or "pssr" in lower_name:
-            target_title = "STCW Basic Courses"
-        existing = next((section for section in sections if section["title"] == target_title), None)
-        if not existing:
-            existing = {"title": target_title, "items": []}
-            sections.append(existing)
-        existing["items"].append(
-            _crewlink_item(
-                sr_no,
-                required_name,
-                verified=False,
-                remark="Required by vessel matrix but not found in Crewlink import.",
-                missing=True,
-            )
-        )
-        sr_no += 1
+    _append_missing_matrix_requirements(sections, resolved_matrix_requirements, sr_no)
 
     return {"sections": sections, "summary": {"valid": 0, "pendingVerification": 0, "missing": 0, "expired": 0}}
 
@@ -1400,9 +1726,16 @@ async def _import_crewlink_vessel(
         raise HTTPException(status_code=400, detail="Crewlink vessel ID is not configured.")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        vessel_header, crew_list = await asyncio.gather(
+        vessel_header, crew_list, vessel_detail = await asyncio.gather(
             _crewlink_get_json(client, "Vessel/getVesselHeader", vesselId=target_vessel_id),
             _crewlink_get_json(client, "CrewList/getCrewList", vesselId=target_vessel_id),
+            _crewlink_try_get_json(client, "Vessel/getVessels", vesselId=target_vessel_id),
+        )
+        vessel_detail_item = vessel_detail[0] if isinstance(vessel_detail, list) and vessel_detail else {}
+        vessel_type_id = (
+            _safe_int(vessel_detail_item.get("shipId"))
+            or _safe_int(_nested_value(vessel_detail_item, "shipType.shipId"))
+            or _safe_int((vessel_header[0] if vessel_header else {}).get("shipId"))
         )
 
         selected_list = [item for item in crew_list if item.get("crewId") or item.get("reliever1")]
@@ -1416,6 +1749,7 @@ async def _import_crewlink_vessel(
         imported_documents: Dict[str, Any] = {}
         imported_confirmation: Dict[str, Any] = {}
         imported_audit_logs: Dict[str, Any] = {}
+        matrix_cache: Dict[tuple[int, int, int], Dict[str, Any]] = {}
 
         for index, item in enumerate(selected_list, start=1):
             source_crew_id = item.get("crewId") or item.get("reliever1")
@@ -1432,10 +1766,33 @@ async def _import_crewlink_vessel(
             crew_member["srNo"] = index
             if bundle.get("indos"):
                 crew_member["indosNo"] = bundle["indos"][0].get("documentNo", "")
+            rank_id = _safe_int(
+                (bundle.get("signOn") or {}).get("rankId")
+                or item.get("rankId")
+                or item.get("relieverRankId")
+            )
+            vessel_id_for_matrix = _safe_int(
+                (bundle.get("signOn") or {}).get("vesselId")
+                or item.get("vesselId")
+                or target_vessel_id
+            )
+            cache_key = (rank_id, vessel_id_for_matrix, vessel_type_id)
+            if cache_key not in matrix_cache:
+                matrix_cache[cache_key] = await _crewlink_fetch_matrix_records(
+                    client,
+                    rank_id=rank_id,
+                    vessel_id=vessel_id_for_matrix,
+                    vessel_type_id=vessel_type_id,
+                )
+            matrix_result = matrix_cache[cache_key]
+            matrix_requirements = matrix_result.get("requirements") or _fallback_matrix_requirements(crew_member["rank"])
+            crew_member["matrixDocuments"] = [entry["name"] for entry in matrix_requirements]
+            crew_member["matrixSource"] = matrix_result.get("source") or "seed-fallback"
             imported_crew.append(crew_member)
             imported_documents[crew_member["id"]] = _crewlink_build_documents(
                 crew_member["rank"],
                 bundle,
+                matrix_requirements,
                 checklist_sections,
             )
             imported_confirmation[crew_member["id"]] = _crewlink_build_confirmation()
@@ -1481,6 +1838,7 @@ async def _import_crewlink_vessel(
         "extendedContract": 0,
         "reducedContract": 0,
         "crewlinkVesselId": target_vessel_id,
+        "crewlinkVesselTypeId": vessel_type_id,
     }
 
     for crew_member in imported_crew:
@@ -1512,6 +1870,15 @@ def _build_portal_result(
 ) -> Dict[str, Any]:
     resolved_eligible = verification_mode != "review" if eligible is None else eligible
     resolved_auto_capable = verification_mode == "auto" if auto_capable is None else auto_capable
+    portal_status: PortalStatus
+    if verified:
+        portal_status = "verified"
+    elif verification_mode in {"manual", "directory"}:
+        portal_status = "manual_review"
+    elif verification_mode == "review":
+        portal_status = "not_applicable"
+    else:
+        portal_status = "pending"
     return {
         "docName": doc_name,
         "verified": verified,
@@ -1523,6 +1890,7 @@ def _build_portal_result(
         "requiredInputs": required_inputs or [],
         "recommendedAiStatus": recommended_ai_status,
         "checklistStatus": checklist_status,
+        "portalStatus": portal_status,
         "eligible": resolved_eligible,
         "autoCapable": resolved_auto_capable,
     }
@@ -1541,17 +1909,57 @@ def _serialize_portal_route(route: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _review_status_for_item(item: Dict[str, Any]) -> AIStatus:
-    if item.get("overrideStatus") in {"green", "yellow", "red"}:
-        return item["overrideStatus"]
+def _derive_checklist_status(item: Dict[str, Any]) -> ChecklistStatus:
+    if not item.get("required", True):
+        return "not_applicable"
+    override = item.get("overrideStatus")
+    if override == "green":
+        return "good"
+    if override == "yellow":
+        return "pending"
+    if override == "red":
+        return "missing"
     if item.get("missing") or item.get("expired", False):
+        return "missing"
+    if item.get("checklistAttention") or not item.get("verifiedRC", False):
+        return "pending"
+    return "good"
+
+
+def _derive_portal_status(
+    item: Dict[str, Any],
+    route: Dict[str, Any],
+    *,
+    crewlink_imported: bool,
+    checklist_status: ChecklistStatus,
+) -> PortalStatus:
+    if not item.get("required", True):
+        return "not_applicable"
+    if checklist_status in {"missing", "pending"}:
+        return "blocked"
+    if item.get("portalVerified", False):
+        return "verified"
+    if not route.get("eligible"):
+        return "not_applicable"
+    if route.get("autoCapable"):
+        return "pending"
+    return "manual_review" if crewlink_imported or route.get("eligible") else "not_applicable"
+
+
+def _overall_ai_status_for_item(checklist_status: ChecklistStatus, portal_status: PortalStatus) -> AIStatus:
+    if checklist_status == "missing":
         return "red"
-    current = item.get("aiStatus")
-    if current in {"green", "yellow", "red"} and not (
-        current == "yellow" and not item.get("portalVerified", False)
-    ):
-        return current
-    return "green" if item.get("required", True) else "grey"
+    if checklist_status == "pending" or portal_status in {"pending", "manual_review"}:
+        return "yellow"
+    if checklist_status == "good":
+        return "green"
+    return "grey"
+
+
+def _review_status_for_item(item: Dict[str, Any]) -> AIStatus:
+    checklist_status = item.get("checklistStatus") or _derive_checklist_status(item)
+    portal_status = item.get("portalStatus") or "not_applicable"
+    return _overall_ai_status_for_item(checklist_status, portal_status)
 
 
 def _looks_like_indian_competency_name(doc_name: str) -> bool:
@@ -1779,7 +2187,7 @@ def _append_audit(crew_id: str, actor: str, action: str, target: str, message: s
 
 def _required_documents_for(crew_id: str) -> List[str]:
     crew = _find_crew_member(crew_id)
-    return VESSEL_MATRIX.get(crew["rank"], [])
+    return crew.get("matrixDocuments") or VESSEL_MATRIX.get(crew["rank"], [])
 
 
 def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: List[str]) -> None:
@@ -1788,14 +2196,23 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     elif item.get("missing"):
         item.setdefault("attachmentUrl", "")
     item.setdefault("attachmentName", f"{item['name']}.pdf" if not item.get("missing") else "")
-    item.setdefault("portalVerified", False)
     item.setdefault("overrideStatus", "")
     item.setdefault("overrideReason", "")
     item.setdefault("extractionConfidence", 0.98 if item.get("verifiedRC") else 0.72)
+    item.setdefault("hasEvidence", bool(item.get("attachmentUrl") or _crewlink_has_value(item.get("docNo")) or item.get("issueDate")))
+    item.setdefault("checklistAttention", False)
     item["required"] = item.get("required", item["name"] in required_docs)
-    item["portalRoute"] = _serialize_portal_route(
-        _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+    route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+    item.setdefault("portalVerified", bool(item.get("verifiedOps")) and route.get("eligible", False))
+    item["portalRoute"] = _serialize_portal_route(route)
+    item["checklistStatus"] = _derive_checklist_status(item)
+    item["portalStatus"] = _derive_portal_status(
+        item,
+        route,
+        crewlink_imported=bool(_find_crew_member(crew_id).get("crewlinkCrewId")),
+        checklist_status=item["checklistStatus"],
     )
+    item["aiStatus"] = _overall_ai_status_for_item(item["checklistStatus"], item["portalStatus"])
 
 
 def _recalculate_crew(crew_id: str) -> None:
@@ -1813,6 +2230,10 @@ def _recalculate_crew(crew_id: str) -> None:
             "pendingVerification": 0,
             "missing": 0,
             "expired": 0,
+            "checklistPending": 0,
+            "portalPending": 0,
+            "manualReviewPending": 0,
+            "autoVerificationPending": 0,
         }
         crew["aiStatus"] = "yellow"
         crew["complianceIssue"] = False
@@ -1822,38 +2243,45 @@ def _recalculate_crew(crew_id: str) -> None:
     pending = 0
     missing = 0
     expired = 0
+    checklist_pending = 0
+    portal_pending = 0
+    manual_review_pending = 0
+    auto_verification_pending = 0
 
     for item in all_items:
         _hydrate_document_item(crew_id, item, required_docs)
-        status = item.get("overrideStatus") or item.get("aiStatus", "grey")
         route = item.get("portalRoute") or _serialize_portal_route(
             _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
         )
-        portal_pending = (
-            crewlink_imported
-            and item["required"]
-            and not item.get("missing")
-            and not item.get("expired", False)
-            and route.get("eligible")
-            and not item.get("portalVerified", False)
-            and not item.get("overrideStatus")
-        )
-        if portal_pending:
-            status = "yellow"
-            if not item.get("remark"):
-                if route.get("autoCapable"):
-                    item["remark"] = f"Portal verification pending through {route['portalLabel']}."
-                else:
-                    item["remark"] = f"Manual portal review required through {route['portalLabel']}."
-        item["aiStatus"] = status
+        checklist_status = item["checklistStatus"]
+        portal_status = item["portalStatus"]
+        current_remark = item.get("remark", "")
+        can_replace_remark = not current_remark or _looks_like_system_status_remark(current_remark)
 
-        if item["required"] and item.get("missing"):
-            missing += 1
-        elif item["required"] and status == "yellow":
-            pending += 1
-        elif item["required"] and status == "red" and item.get("expired", False):
+        if item["required"] and checklist_status == "good" and portal_status == "pending" and can_replace_remark:
+            item["remark"] = f"Portal verification pending through {route['portalLabel']}."
+        elif item["required"] and checklist_status == "good" and portal_status == "manual_review" and can_replace_remark:
+            item["remark"] = f"Manual portal review required through {route['portalLabel']}."
+        elif item["required"] and checklist_status == "pending" and can_replace_remark:
+            item["remark"] = "Checklist review is still pending."
+        elif item["required"] and checklist_status == "good" and portal_status == "not_applicable" and can_replace_remark:
+            item["remark"] = ""
+
+        if item["required"] and item.get("expired", False):
             expired += 1
-        elif item["required"] and status == "green":
+        elif item["required"] and checklist_status == "missing":
+            missing += 1
+        elif item["required"] and checklist_status == "pending":
+            checklist_pending += 1
+            pending += 1
+        elif item["required"] and portal_status in {"pending", "manual_review"}:
+            portal_pending += 1
+            pending += 1
+            if portal_status == "manual_review":
+                manual_review_pending += 1
+            elif portal_status == "pending":
+                auto_verification_pending += 1
+        elif item["required"] and item["aiStatus"] == "green":
             valid += 1
 
     docs["summary"] = {
@@ -1861,6 +2289,10 @@ def _recalculate_crew(crew_id: str) -> None:
         "pendingVerification": pending,
         "missing": missing,
         "expired": expired,
+        "checklistPending": checklist_pending,
+        "portalPending": portal_pending,
+        "manualReviewPending": manual_review_pending,
+        "autoVerificationPending": auto_verification_pending,
     }
     if missing > 0 or expired > 0:
         crew["aiStatus"] = "red"
@@ -2408,23 +2840,18 @@ async def _build_portal_response(
 def _apply_portal_result(crew_id: str, item: Dict[str, Any], result: Dict[str, Any]) -> None:
     item["portalVerified"] = result["verified"]
     item["verifiedOps"] = result["verified"]
+    item["portalStatus"] = result.get("portalStatus", item.get("portalStatus", "pending"))
     if result.get("verificationMode") == "auto":
-        item["aiStatus"] = result.get("recommendedAiStatus", item.get("aiStatus", "yellow"))
         item["remark"] = result.get("message", item.get("remark", ""))
         if result["verified"]:
             item["missing"] = False
-            item["overrideStatus"] = ""
-            item["overrideReason"] = ""
         else:
             item["verifiedOps"] = False
     elif result.get("verificationMode") == "review":
-        item["aiStatus"] = result.get("recommendedAiStatus", _review_status_for_item(item))
         item["remark"] = result.get("message", item.get("remark", ""))
         item["verifiedOps"] = False
     elif result["verified"] and not item.get("missing"):
-        item["aiStatus"] = "green"
-        item["overrideStatus"] = ""
-        item["overrideReason"] = ""
+        item["portalStatus"] = "verified"
     _recalculate_crew(crew_id)
 
 
@@ -2467,11 +2894,17 @@ def _get_fallback_narrative(crew_id: str) -> str:
         for item in section["items"]
         if item.get("missing")
     ]
-    pending_items = [
+    checklist_pending_items = [
         item["name"]
         for section in docs["sections"]
         for item in section["items"]
-        if item.get("aiStatus") == "yellow" and not item.get("missing")
+        if item.get("checklistStatus") == "pending"
+    ]
+    portal_pending_items = [
+        item["name"]
+        for section in docs["sections"]
+        for item in section["items"]
+        if item.get("portalStatus") in {"pending", "manual_review"}
     ]
 
     if crew["aiStatus"] == "green":
@@ -2486,8 +2919,9 @@ def _get_fallback_narrative(crew_id: str) -> str:
             "RC and Ops should not clear sign-on until these gaps are resolved. Risk level: High."
         )
     return (
-        f"All required documents are attached for {crew['name']}, but {summary['pendingVerification']} item(s) "
-        f"still require verification or Ops review, including {', '.join(pending_items[:3])}. "
+        f"{summary.get('checklistPending', 0)} checklist item(s) and {summary.get('portalPending', 0)} portal item(s) "
+        f"still need action for {crew['name']}, including "
+        f"{', '.join((checklist_pending_items + portal_pending_items)[:3])}. "
         "Crew may proceed only with controlled review from Ops. Risk level: Medium."
     )
 
@@ -2508,11 +2942,17 @@ async def _generate_ai_narrative(crew_id: str) -> str:
         for item in section["items"]
         if item.get("missing")
     ]
-    pending_items = [
+    checklist_pending_items = [
         item["name"]
         for section in docs["sections"]
         for item in section["items"]
-        if item.get("aiStatus") == "yellow" and not item.get("missing")
+        if item.get("checklistStatus") == "pending"
+    ]
+    portal_pending_items = [
+        item["name"]
+        for section in docs["sections"]
+        for item in section["items"]
+        if item.get("portalStatus") in {"pending", "manual_review"}
     ]
 
     prompt = f"""You are a maritime compliance officer helping review a pre-joining checklist.
@@ -2522,11 +2962,13 @@ Vessel: {vessel.get('name', BASE_VESSEL['name'])} ({vessel.get('type', BASE_VESS
 Flag: {vessel.get('flag', BASE_VESSEL['flag'])}
 Required documents count: {len(required_docs)}
 Valid and verified: {summary['valid']}
-Pending review: {summary['pendingVerification']}
+Checklist pending: {summary.get('checklistPending', 0)}
+Portal pending: {summary.get('portalPending', 0)}
 Missing: {summary['missing']}
 Expired: {summary['expired']}
 Missing items: {', '.join(missing_items) if missing_items else 'None'}
-Pending items: {', '.join(pending_items) if pending_items else 'None'}
+Checklist pending items: {', '.join(checklist_pending_items) if checklist_pending_items else 'None'}
+Portal pending items: {', '.join(portal_pending_items) if portal_pending_items else 'None'}
 
 Provide a concise 3-4 sentence assessment with:
 1. overall compliance posture
@@ -2600,6 +3042,8 @@ def _build_ai_check_payload(crew_id: str, ai_narrative: str) -> Dict[str, Any]:
         "summary": docs["summary"],
         "missingItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("missing")],
         "pendingItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("aiStatus") == "yellow" and not item.get("missing")],
+        "checklistPendingItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("checklistStatus") == "pending"],
+        "portalPendingItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("portalStatus") in {"pending", "manual_review"}],
         "expiredItems": [item["name"] for section in docs["sections"] for item in section["items"] if item.get("expired")],
         "aiNarrative": ai_narrative,
         "overallStatus": crew["aiStatus"],
@@ -2949,20 +3393,17 @@ def override_document_status(
 ):
     item = _find_document(crew_id, sr_no)
     item["overrideStatus"] = request.status
-    item["aiStatus"] = request.status
     item["overrideReason"] = request.reason
     if request.status == "green":
         item["missing"] = False
-        item["verifiedOps"] = True
-        item["portalVerified"] = True
+        item["verifiedRC"] = True
+        item["checklistAttention"] = False
     elif request.status == "yellow":
         item["missing"] = False
-        item["verifiedOps"] = False
-        item["portalVerified"] = False
+        item["checklistAttention"] = True
     else:
         item["missing"] = True
-        item["verifiedOps"] = False
-        item["portalVerified"] = False
+        item["checklistAttention"] = False
     _recalculate_crew(crew_id)
     STATE["learning_feedback"][crew_id].append(
         {
@@ -3077,7 +3518,7 @@ async def verify_portal(
     result = await _build_portal_response(crew_id, request.docName, request.docNo, request.issueAuthority)
     if result.get("verificationMode") == "review" and not result["verified"]:
         result["recommendedAiStatus"] = _review_status_for_item(item)
-        result["checklistStatus"] = "missing" if result["recommendedAiStatus"] == "red" else "good"
+        result["checklistStatus"] = item.get("checklistStatus", "good")
     _apply_portal_result(crew_id, item, result)
     _append_audit(
         crew_id,
@@ -3101,20 +3542,13 @@ async def verify_portal_batch(
         item
         for section in STATE["documents"][crew_id]["sections"]
         for item in section["items"]
-        if item.get("aiStatus") == "yellow"
-        and not item.get("missing")
-        and not item.get("portalVerified")
-        and (_resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("eligible"))
-        and not (_resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("autoCapable"))
+        if item.get("portalStatus") == "manual_review"
     ]
     items_to_verify = [
         item
         for section in STATE["documents"][crew_id]["sections"]
         for item in section["items"]
-        if item.get("aiStatus") == "yellow"
-        and not item.get("missing")
-        and not item.get("portalVerified")
-        and _resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("autoCapable")
+        if item.get("portalStatus") == "pending"
     ]
 
     results = []
@@ -3244,11 +3678,13 @@ def get_crew_report(
     request: Request,
     current_user: Dict[str, Any] = Depends(require_user()),
 ):
-    _find_crew_member(crew_id)
+    crew = _find_crew_member(crew_id)
+    vessel = STATE.get("vessel", BASE_VESSEL)
     return {
         "matrix": {
             "requiredDocuments": _required_documents_for(crew_id),
-            "vessel": BASE_VESSEL["name"],
+            "vessel": vessel.get("name", BASE_VESSEL["name"]),
+            "source": crew.get("matrixSource") or "seed-fallback",
         },
         "extraction": _build_extraction_report(crew_id),
         "auditLog": STATE["audit_logs"][crew_id][:10],

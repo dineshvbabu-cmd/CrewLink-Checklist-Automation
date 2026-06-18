@@ -18,7 +18,13 @@ export default function EvidencePanel({ report }: Props) {
       <div className="rounded border border-gray-200 bg-white">
         <div className="px-4 py-3 border-b border-gray-200">
           <h3 className="m-0 text-sm font-semibold text-gray-800">Vessel / Rank Matrix</h3>
-          <p className="m-0 mt-1 text-xs text-gray-500">Required document set used by the AI check.</p>
+          <p className="m-0 mt-1 text-xs text-gray-500">
+            Required document set used by the AI check.
+            {' '}
+            Source:
+            {' '}
+            <span className="font-medium text-slate-700">{report.matrix.source || 'seed-fallback'}</span>
+          </p>
         </div>
         <div className="p-4">
           <div className="flex flex-wrap gap-2">

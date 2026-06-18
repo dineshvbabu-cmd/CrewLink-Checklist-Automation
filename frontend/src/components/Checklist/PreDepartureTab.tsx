@@ -1,6 +1,6 @@
 import { Fragment } from 'react'
 import { Paperclip } from 'lucide-react'
-import type { DocumentsData, PortalVerificationResult } from '../../types'
+import type { DocumentsData, PortalVerificationResult, PortalStatus, ChecklistStatus } from '../../types'
 import TrafficLight from '../Common/TrafficLight'
 
 const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
@@ -9,36 +9,43 @@ const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
   red: 'Missing',
 }
 
-function verificationColor(result: PortalVerificationResult) {
-  if (result.verificationMode === 'manual' || result.verificationMode === 'directory') {
-    return '#f39c12'
+function checklistPresentation(status?: ChecklistStatus) {
+  switch (status) {
+    case 'good':
+      return { color: '#27ae60', label: 'Complete', detail: 'Matrix matched and checklist cleared' }
+    case 'pending':
+      return { color: '#f39c12', label: 'Pending', detail: 'Checklist review still needed' }
+    case 'missing':
+      return { color: '#e74c3c', label: 'Missing', detail: 'Required by matrix but not cleared' }
+    default:
+      return { color: '#64748b', label: 'N/A', detail: 'Not required for this crew' }
   }
-  if (result.verificationMode === 'review') {
-    return '#64748b'
-  }
-  if (result.checklistStatus === 'good') {
-    return '#27ae60'
-  }
-  if (result.checklistStatus === 'missing') {
-    return '#e74c3c'
-  }
-  return '#f39c12'
 }
 
-function verificationLabel(result: PortalVerificationResult) {
-  if (result.verificationMode === 'manual' || result.verificationMode === 'directory') {
-    return 'Manual portal review'
+function portalPresentation(status: PortalStatus | undefined, result?: PortalVerificationResult) {
+  if (result?.verified) {
+    return { color: '#27ae60', label: 'Verified', detail: result.message }
   }
-  if (result.verificationMode === 'review') {
-    return 'AI review only'
+
+  switch (status) {
+    case 'verified':
+      return { color: '#27ae60', label: 'Verified', detail: 'Portal verification completed' }
+    case 'pending':
+      return { color: '#e67e22', label: 'Pending auto check', detail: 'Ready for portal automation' }
+    case 'manual_review':
+      return { color: '#f39c12', label: 'Pending manual review', detail: 'External portal review required' }
+    case 'blocked':
+      return { color: '#c2410c', label: 'Blocked', detail: 'Finish checklist review first' }
+    default:
+      return { color: '#64748b', label: 'Not applicable', detail: 'No supported public portal' }
   }
-  if (result.checklistStatus === 'good') {
-    return 'Good'
+}
+
+function confidenceLabel(score?: number) {
+  if (typeof score !== 'number') {
+    return '-'
   }
-  if (result.checklistStatus === 'missing') {
-    return 'Missing'
-  }
-  return 'Pending'
+  return `${Math.round(score * 100)}%`
 }
 
 interface Props {
@@ -107,6 +114,21 @@ export default function PreDepartureTab({
         </div>
       )}
 
+      <div className="grid gap-3 px-4 py-3 md:grid-cols-2" style={{ backgroundColor: '#f8fbff', borderBottom: '1px solid #dbe7f3' }}>
+        <div className="rounded border border-blue-100 bg-white px-3 py-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Checklist Check</div>
+          <div className="mt-1 text-xs text-slate-700">
+            Matrix requirement + uploaded evidence + RC / Ops checklist decision.
+          </div>
+        </div>
+        <div className="rounded border border-amber-100 bg-white px-3 py-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Portal Verification</div>
+          <div className="mt-1 text-xs text-slate-700">
+            Separate external authority verification. This can stay pending even after the checklist is complete.
+          </div>
+        </div>
+      </div>
+
       <div className="overflow-x-auto">
         <table className="crewlink-table">
           <thead>
@@ -118,17 +140,18 @@ export default function PreDepartureTab({
               <th style={{ width: 95 }}>Issue Date</th>
               <th style={{ width: 95 }}>Expiry Date</th>
               <th style={{ width: 80 }}>Att.</th>
-              <th style={{ width: 75 }}>Verify (RC)</th>
-              <th style={{ width: 110 }}>Verify (Ops)</th>
-              <th style={{ width: 55 }}>AI</th>
-              <th style={{ minWidth: 210 }}>Remarks / Action</th>
+              <th style={{ width: 150 }}>Checklist Check</th>
+              <th style={{ width: 170 }}>Portal Verification</th>
+              <th style={{ width: 85 }}>Confidence</th>
+              <th style={{ width: 70 }}>AI</th>
+              <th style={{ minWidth: 230 }}>Remarks / Action</th>
             </tr>
           </thead>
           <tbody>
             {data.sections.map(section => (
               <Fragment key={section.title}>
                 <tr className="section-header-row">
-                  <td colSpan={11}>{section.title}</td>
+                  <td colSpan={12}>{section.title}</td>
                 </tr>
                 {section.items.map(item => {
                   srCounter += 1
@@ -139,10 +162,12 @@ export default function PreDepartureTab({
                     canEditRemark || (canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow'))
                   const displayStatus = item.overrideStatus || item.aiStatus
                   const showOverrideSection = canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.overrideStatus)
+                  const checklistView = checklistPresentation(item.checklistStatus)
+                  const portalView = portalPresentation(item.portalStatus, verifyResult)
                   const portalRoute = item.portalRoute
                   const routeNeedsManualReview = portalRoute?.eligible && !portalRoute?.autoCapable
                   const routeIsUnsupported = portalRoute && portalRoute.eligible === false
-                  const canAutoVerify = portalRoute?.autoCapable
+                  const canAutoVerify = portalRoute?.autoCapable && item.portalStatus === 'pending'
 
                   return (
                     <Fragment key={`${section.title}-${item.srNo}`}>
@@ -191,41 +216,49 @@ export default function PreDepartureTab({
                           </div>
                         </td>
                         <td className="text-center">
-                          {item.verifiedRC && !isMissing ? (
-                            <span className="tick-verified" title="RC Verified">OK</span>
-                          ) : (
-                            <span className="text-gray-300 text-xs">-</span>
-                          )}
+                          <div>
+                            <div style={{ color: checklistView.color }} className="text-xs font-semibold">
+                              {checklistView.label}
+                            </div>
+                            <div className="text-[10px] text-gray-500 leading-tight" style={{ maxWidth: 140 }}>
+                              {checklistView.detail}
+                            </div>
+                          </div>
                         </td>
                         <td>
-                          {isMissing ? (
-                            <span className="text-gray-400 text-xs">-</span>
-                          ) : item.verifiedOps ? (
-                            <span className="tick-verified" title="Ops Verified">OK</span>
-                          ) : verifyResult ? (
+                          {verifyResult?.portalUrl ? (
                             <div>
-                              <span style={{ color: verificationColor(verifyResult) }} className="text-xs">
-                                {verificationLabel(verifyResult)}
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
                               </span>
-                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
-                                {verifyResult.message}
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                {portalView.detail}
                               </div>
-                              {verifyResult.portalUrl && (
-                                <a
-                                  href={verifyResult.portalUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="link-blue text-[10px]"
-                                >
-                                  Open {verifyResult.portalLabel || verifyResult.portal}
-                                </a>
-                              )}
+                              <a
+                                href={verifyResult.portalUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="link-blue text-[10px]"
+                              >
+                                Open {verifyResult.portalLabel || verifyResult.portal}
+                              </a>
                             </div>
-                          ) : routeNeedsManualReview ? (
+                          ) : item.portalStatus === 'verified' ? (
                             <div>
-                              <span style={{ color: '#f39c12' }} className="text-xs">Manual portal review</span>
-                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
-                                {portalRoute?.portalLabel || portalRoute?.portal}
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                {portalView.detail}
+                              </div>
+                            </div>
+                          ) : item.portalStatus === 'manual_review' || routeNeedsManualReview ? (
+                            <div>
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                {portalRoute?.portalLabel || portalView.detail}
                               </div>
                               {portalRoute?.portalUrl && (
                                 <a href={portalRoute.portalUrl} target="_blank" rel="noreferrer" className="link-blue text-[10px]">
@@ -233,11 +266,22 @@ export default function PreDepartureTab({
                                 </a>
                               )}
                             </div>
-                          ) : routeIsUnsupported ? (
+                          ) : item.portalStatus === 'not_applicable' || routeIsUnsupported ? (
                             <div>
-                              <span style={{ color: '#64748b' }} className="text-xs">AI review only</span>
-                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
-                                No supported public portal
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                {portalView.detail}
+                              </div>
+                            </div>
+                          ) : item.portalStatus === 'blocked' ? (
+                            <div>
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                {portalView.detail}
                               </div>
                             </div>
                           ) : canAutoVerify ? (
@@ -252,16 +296,29 @@ export default function PreDepartureTab({
                                   Checking...
                                 </span>
                               ) : (
-                                'Verify'
+                                'Run portal check'
                               )}
                             </button>
+                          ) : verifyResult ? (
+                            <div>
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                {portalView.detail}
+                              </div>
+                            </div>
                           ) : (
                             <span className="text-gray-300 text-xs">-</span>
                           )}
                         </td>
                         <td className="text-center">
+                          <div className="text-xs font-semibold text-slate-700">{confidenceLabel(item.extractionConfidence)}</div>
+                          <div className="text-[10px] text-slate-500">AI extraction</div>
+                        </td>
+                        <td className="text-center">
                           <div className="flex flex-col items-center gap-1">
-                            <TrafficLight status={isMissing ? 'red' : item.aiStatus} size={11} />
+                            <TrafficLight status={isMissing ? 'red' : (displayStatus as 'green' | 'yellow' | 'red')} size={11} />
                             <span className="text-[10px] font-medium text-slate-500">
                               {STATUS_LABELS[(displayStatus || 'red') as 'green' | 'yellow' | 'red']}
                             </span>
@@ -321,7 +378,7 @@ export default function PreDepartureTab({
                       </tr>
                       {isEditorOpen && inlineEditor && canShowCombinedEditor && (
                         <tr>
-                          <td colSpan={11} className="bg-slate-50 px-4 py-4">
+                          <td colSpan={12} className="bg-slate-50 px-4 py-4">
                             <div className={`grid gap-4 ${showOverrideSection ? 'lg:grid-cols-2' : 'grid-cols-1'}`}>
                               {canEditRemark && (
                                 <div className="rounded border border-slate-200 bg-white p-4">

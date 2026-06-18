@@ -1,4 +1,6 @@
 export type AIStatus = 'green' | 'yellow' | 'red' | 'grey'
+export type ChecklistStatus = 'good' | 'pending' | 'missing' | 'not_applicable'
+export type PortalStatus = 'verified' | 'pending' | 'manual_review' | 'not_applicable' | 'blocked'
 
 export interface PortalRouteInfo {
   portal: string
@@ -66,6 +68,10 @@ export interface DocumentItem {
   extractionConfidence?: number
   expired?: boolean
   portalRoute?: PortalRouteInfo
+  checklistStatus?: ChecklistStatus
+  portalStatus?: PortalStatus
+  hasEvidence?: boolean
+  checklistAttention?: boolean
 }
 
 export interface DocumentSection {
@@ -78,6 +84,10 @@ export interface ChecklistSummary {
   pendingVerification: number
   missing: number
   expired: number
+  checklistPending?: number
+  portalPending?: number
+  manualReviewPending?: number
+  autoVerificationPending?: number
 }
 
 export interface DocumentsData {
@@ -105,6 +115,7 @@ export interface PortalVerificationResult {
   requiredInputs?: string[]
   recommendedAiStatus?: 'green' | 'yellow' | 'red'
   checklistStatus?: 'good' | 'pending' | 'missing'
+  portalStatus?: PortalStatus
   eligible?: boolean
   autoCapable?: boolean
 }
@@ -222,6 +233,7 @@ export interface CrewReport {
   matrix: {
     requiredDocuments: string[]
     vessel: string
+    source?: string
   }
   extraction: ExtractionReport
   auditLog: AuditEntry[]
@@ -238,6 +250,8 @@ export interface AICheckResult {
   summary: ChecklistSummary
   missingItems: string[]
   pendingItems: string[]
+  checklistPendingItems?: string[]
+  portalPendingItems?: string[]
   expiredItems: string[]
   aiNarrative: string
   overallStatus: Exclude<AIStatus, 'grey'>
