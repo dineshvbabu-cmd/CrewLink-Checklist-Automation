@@ -209,6 +209,8 @@ def test_crewlink_checklist_item_marks_ops_review_as_pending():
     assert item["required"] is True
     assert item["missing"] is False
     assert item["aiStatus"] == "yellow"
+    assert item["verifiedOps"] is False
+    assert item["portalVerified"] is False
     assert "review by OPS" in item["remark"]
 
 
@@ -251,3 +253,11 @@ def test_crewlink_checklist_item_marks_missing_mandatory_course_red():
     assert item["required"] is True
     assert item["missing"] is True
     assert item["aiStatus"] == "red"
+
+
+def test_indian_master_fg_document_routes_to_dg_shipping_coc_checker():
+    route = main._resolve_portal_route("c003", "Master F.G. II/2", "IF008168", "India")
+
+    assert route["portal"] == "DG Shipping India"
+    assert route["strategy"] == "dg_coc"
+    assert route["eligible"] is True

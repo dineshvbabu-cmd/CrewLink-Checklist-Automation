@@ -1152,8 +1152,8 @@ def _crewlink_item_from_checklist(
         "issueDate": issue_date or "",
         "expiryDate": expiry_date,
         "verifiedRC": verified_rc or verified_ops,
-        "verifiedOps": verified_ops,
-        "portalVerified": verified_ops,
+        "verifiedOps": False,
+        "portalVerified": False,
         "aiStatus": ai_status,
         "remark": final_remark,
         "missing": missing,
@@ -1522,6 +1522,28 @@ def _build_portal_result(
     }
 
 
+def _looks_like_indian_competency_name(doc_name: str) -> bool:
+    candidate = doc_name.lower()
+    competency_keywords = (
+        "certificate of competency",
+        "officer in charge",
+        "navigational watch",
+        "chief officer",
+        "chief mate",
+        "second mate",
+        "master",
+        "mate f.g.",
+        "master f.g.",
+        "engineer officer",
+        "chief engineer",
+        "second engineer",
+        "watchkeeping officer",
+    )
+    if any(keyword in candidate for keyword in competency_keywords):
+        return True
+    return bool(re.search(r"\bii/[12]\b|\biii/[12]\b|\biv/2\b", candidate)) and "gmdss" not in candidate
+
+
 def _resolve_portal_route(
     crew_id: str,
     doc_name: str,
@@ -1555,7 +1577,12 @@ def _resolve_portal_route(
             "eligible": True,
         }
 
-    if indian_document and ("certificate of competency" in name or "officer in charge" in name or "coc" in name):
+    if indian_document and (
+        "coc" in name
+        or "certificate of competency" in name
+        or "officer in charge" in name
+        or _looks_like_indian_competency_name(name)
+    ):
         return {
             "portal": "DG Shipping India",
             "portalLabel": "DG Shipping CoC Checker",
@@ -1729,7 +1756,7 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     elif item.get("missing"):
         item.setdefault("attachmentUrl", "")
     item.setdefault("attachmentName", f"{item['name']}.pdf" if not item.get("missing") else "")
-    item.setdefault("portalVerified", item.get("verifiedOps", False))
+    item.setdefault("portalVerified", False)
     item.setdefault("overrideStatus", "")
     item.setdefault("overrideReason", "")
     item.setdefault("extractionConfidence", 0.98 if item.get("verifiedRC") else 0.72)
@@ -1740,6 +1767,8 @@ def _recalculate_crew(crew_id: str) -> None:
     required_docs = _required_documents_for(crew_id)
     docs = STATE["documents"][crew_id]
     all_items = [item for section in docs["sections"] for item in section["items"]]
+    crew = _find_crew_member(crew_id)
+    crewlink_imported = bool(crew.get("crewlinkCrewId"))
 
     if not required_docs:
         for item in all_items:
@@ -1750,7 +1779,6 @@ def _recalculate_crew(crew_id: str) -> None:
             "missing": 0,
             "expired": 0,
         }
-        crew = _find_crew_member(crew_id)
         crew["aiStatus"] = "yellow"
         crew["complianceIssue"] = False
         return
@@ -1763,6 +1791,20 @@ def _recalculate_crew(crew_id: str) -> None:
     for item in all_items:
         _hydrate_document_item(crew_id, item, required_docs)
         status = item.get("overrideStatus") or item.get("aiStatus", "grey")
+        route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
+        portal_pending = (
+            crewlink_imported
+            and item["required"]
+            and not item.get("missing")
+            and not item.get("expired", False)
+            and route.get("eligible")
+            and not item.get("portalVerified", False)
+            and not item.get("overrideStatus")
+        )
+        if portal_pending:
+            status = "yellow"
+            if not item.get("remark"):
+                item["remark"] = f"Portal verification pending through {route['portalLabel']}."
         item["aiStatus"] = status
 
         if item["required"] and item.get("missing"):
@@ -1780,8 +1822,6 @@ def _recalculate_crew(crew_id: str) -> None:
         "missing": missing,
         "expired": expired,
     }
-
-    crew = _find_crew_member(crew_id)
     if missing > 0 or expired > 0:
         crew["aiStatus"] = "red"
         crew["complianceIssue"] = True
@@ -2981,6 +3021,7 @@ async def verify_portal_batch(
         for item in section["items"]
         if item.get("aiStatus") == "yellow"
         and not item.get("missing")
+        and not item.get("portalVerified")
         and _resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("eligible")
     ]
 
