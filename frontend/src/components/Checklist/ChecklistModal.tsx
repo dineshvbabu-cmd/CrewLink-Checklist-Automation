@@ -52,7 +52,8 @@ function applyVerificationResult(currentDocs: DocumentsData, result: PortalVerif
             ...item,
             verifiedOps: result.verified,
             portalVerified: result.verified,
-            aiStatus: result.verified && item.aiStatus === 'yellow' ? 'green' : item.aiStatus,
+            aiStatus: result.recommendedAiStatus || (result.verified && item.aiStatus === 'yellow' ? 'green' : item.aiStatus),
+            remark: result.message || item.remark,
           }
         : item,
     ),
@@ -266,10 +267,10 @@ export default function ChecklistModal({ member, onClose }: Props) {
   const handleUploadAttachment = async (srNo: number, file: File) => {
     setUploadingSrNo(srNo)
     try {
-      await uploadDocumentAttachment(member.id, srNo, file)
+      const response = await uploadDocumentAttachment(member.id, srNo, file)
       await Promise.all([refreshCoreData(), refreshSideData()])
       await handleAICheck()
-      setInfoMessage(`${file.name} uploaded successfully and re-checked against the vessel matrix.`)
+      setInfoMessage(response?.portalResult?.message || `${file.name} uploaded successfully and re-checked against the vessel matrix.`)
     } finally {
       setUploadingSrNo(null)
     }

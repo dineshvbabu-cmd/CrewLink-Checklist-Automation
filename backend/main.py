@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime
+from html import unescape
 from io import BytesIO
 from typing import Any, Dict, List, Literal, Optional
 import asyncio
 import os
+import re
 import secrets
+from urllib.parse import urlsplit
 
 import anthropic
 import httpx
@@ -110,6 +113,8 @@ BASE_CREW = [
         "name": "Hilton Henry Barreto",
         "empNo": "A6227",
         "nationality": "Indian",
+        "dateOfBirth": "14-Feb-1986",
+        "indosNo": "INDOS-A6227",
         "travelDate": "25-Jul-2026",
         "signOnDate": "28-Jul-2026",
         "reliefDue": "28-Jan-2027",
@@ -127,6 +132,8 @@ BASE_CREW = [
         "name": "Francis Zamani Duniya",
         "empNo": "A5743",
         "nationality": "Nigerian",
+        "dateOfBirth": "02-Aug-1994",
+        "indosNo": "",
         "travelDate": "20-Jul-2026",
         "signOnDate": "23-Jul-2026",
         "reliefDue": "23-Jan-2027",
@@ -144,6 +151,8 @@ BASE_CREW = [
         "name": "Anish Ranjan Singh",
         "empNo": "A0806",
         "nationality": "Indian",
+        "dateOfBirth": "11-Nov-1988",
+        "indosNo": "INDOS-A0806",
         "travelDate": "10-Jul-2026",
         "signOnDate": "13-Jul-2026",
         "reliefDue": "16-Jul-2026",
@@ -473,6 +482,8 @@ def _seed_sample_replacements() -> None:
             "name": "Rohit Kishore Nair",
             "empNo": "A9104",
             "nationality": "Indian",
+            "dateOfBirth": "19-May-1993",
+            "indosNo": "INDOS-A9104",
             "travelDate": "02-Aug-2026",
             "signOnDate": "05-Aug-2026",
             "reliefDue": "05-Feb-2027",
@@ -490,6 +501,8 @@ def _seed_sample_replacements() -> None:
             "name": "Emmanuel Bassey",
             "empNo": "A9105",
             "nationality": "Nigerian",
+            "dateOfBirth": "28-Jan-1991",
+            "indosNo": "",
             "travelDate": "30-Jul-2026",
             "signOnDate": "02-Aug-2026",
             "reliefDue": "02-Feb-2027",
@@ -507,6 +520,8 @@ def _seed_sample_replacements() -> None:
             "name": "Jose Manuel Cruz",
             "empNo": "A9106",
             "nationality": "Filipino",
+            "dateOfBirth": "07-Sep-1984",
+            "indosNo": "",
             "travelDate": "12-Aug-2026",
             "signOnDate": "15-Aug-2026",
             "reliefDue": "15-Feb-2027",
@@ -626,11 +641,11 @@ def require_user(roles: Optional[set[str]] = None):
 
 
 def _portal_configuration() -> Dict[str, Any]:
-    provider = os.environ.get("PORTAL_PROVIDER", "official-portal-routing")
+    provider = os.environ.get("PORTAL_PROVIDER", "official-portal-automation")
     base_url = os.environ.get("PORTAL_API_BASE_URL", "").rstrip("/")
     return {
         "provider": provider,
-        "configured": bool(base_url),
+        "configured": bool(base_url) or _portal_live_checks_enabled(),
         "baseUrl": base_url,
         "storagePath": data_dir(),
         "databasePath": db_path(),
@@ -743,6 +758,87 @@ def _find_confirmation_item(crew_id: str, sr_no: int) -> Dict[str, Any]:
     raise HTTPException(status_code=404, detail="Confirmation item not found")
 
 
+def _portal_live_checks_enabled() -> bool:
+    return os.environ.get("PORTAL_LIVE_CHECKS", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _origin_from_url(url: str) -> str:
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _html_to_text(value: str) -> str:
+    cleaned = re.sub(r"<br\s*/?>", "\n", value or "", flags=re.I)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    return _normalize_text(unescape(cleaned))
+
+
+def _parse_display_date(value: str) -> Optional[datetime]:
+    for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _format_portal_date_for_dg(value: str) -> str:
+    parsed = _parse_display_date(value)
+    return parsed.strftime("%d/%m/%Y") if parsed else ""
+
+
+def _format_portal_date_for_uk(value: str) -> str:
+    parsed = _parse_display_date(value)
+    return parsed.strftime("%Y-%m-%d") if parsed else ""
+
+
+def _crew_portal_profile(crew_id: str) -> Dict[str, str]:
+    crew = _find_crew_member(crew_id)
+    passport_no = ""
+    try:
+        passport_no = _find_document_by_name(crew_id, "Passport").get("docNo", "")
+    except HTTPException:
+        passport_no = ""
+    return {
+        "dateOfBirth": crew.get("dateOfBirth", ""),
+        "indosNo": crew.get("indosNo", ""),
+        "passportNo": passport_no,
+        "nationality": crew.get("nationality", ""),
+        "crewName": crew.get("name", ""),
+    }
+
+
+def _build_portal_result(
+    *,
+    doc_name: str,
+    verified: bool,
+    message: str,
+    portal: str,
+    portal_label: Optional[str],
+    portal_url: Optional[str],
+    verification_mode: Literal["auto", "manual", "directory"],
+    required_inputs: Optional[List[str]] = None,
+    recommended_ai_status: AIStatus = "yellow",
+    checklist_status: Literal["good", "pending", "missing"] = "pending",
+) -> Dict[str, Any]:
+    return {
+        "docName": doc_name,
+        "verified": verified,
+        "message": message,
+        "portal": portal,
+        "portalLabel": portal_label or portal,
+        "portalUrl": portal_url or "",
+        "verificationMode": verification_mode,
+        "requiredInputs": required_inputs or [],
+        "recommendedAiStatus": recommended_ai_status,
+        "checklistStatus": checklist_status,
+    }
+
+
 def _resolve_portal_route(
     crew_id: str,
     doc_name: str,
@@ -768,19 +864,12 @@ def _resolve_portal_route(
             "portal": "UK MCA",
             "portalLabel": "UK CoC / FSE Checker",
             "portalUrl": links["uk_mca_coc"],
-            "verificationMode": "manual",
+            "verificationMode": "auto",
             "requiredInputs": ["Document ID", "Seafarer date of birth"],
-            "message": "Open the UK MCA CoC/FSE checker and validate the document ID against the seafarer's date of birth.",
-        }
-
-    if indian_document and ("cdc" in name):
-        return {
-            "portal": "DG Shipping India",
-            "portalLabel": "DG Shipping CDC Checker",
-            "portalUrl": links["dg_shipping_cdc"],
-            "verificationMode": "manual",
-            "requiredInputs": ["CDC number", "Seafarer date of birth"],
-            "message": "Open the DG Shipping CDC Checker and validate the CDC number against the seafarer's date of birth.",
+            "message": "Validate the document ID against the seafarer's date of birth through the UK MCA checker.",
+            "strategy": "uk_mca_coc",
+            "autoCapable": True,
+            "eligible": True,
         }
 
     if indian_document and ("certificate of competency" in name or "officer in charge" in name or "coc" in name):
@@ -788,28 +877,147 @@ def _resolve_portal_route(
             "portal": "DG Shipping India",
             "portalLabel": "DG Shipping CoC Checker",
             "portalUrl": links["dg_shipping_coc"],
-            "verificationMode": "manual",
-            "requiredInputs": ["Certificate number"],
-            "message": "Open the DG Shipping CoC Checker and verify the certificate number.",
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the Indian competency record through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_coc",
+            "autoCapable": True,
+            "eligible": True,
         }
 
-    if indian_document and ("indos" in name or "cop" in name):
+    if indian_document and ("gmdss" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping GMDSS Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the GMDSS certificate through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_cop",
+            "searchType": "GMDSS",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if indian_document and ("watch keeping" in name or "etr" in name or "ab " in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping Watchkeeping / AB / ETR Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the watchkeeping / AB / ETR certificate through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_cop",
+            "searchType": "WK",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if indian_document and ("dc endorsement" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping COP - DC Endorsement Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the dangerous cargo endorsement through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_cop",
+            "searchType": "DC",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if indian_document and ("polar" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping Polar Water Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the Polar Water endorsement through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_cop",
+            "searchType": "DCPOLAR",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if indian_document and ("igf" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping IGF Code Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the IGF certificate through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_cop",
+            "searchType": "IGF",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if indian_document and ("indos" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping INDoS Checker",
+            "portalUrl": links["dg_shipping_indos"],
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the INDoS record through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_indos",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if indian_document and ("cop" in name):
         return {
             "portal": "DG Shipping India",
             "portalLabel": "DG Shipping INDoS / CoP Checker",
             "portalUrl": links["dg_shipping_indos"],
-            "verificationMode": "manual",
-            "requiredInputs": ["Passport / INDoS / CoP details"],
-            "message": "Open the DG Shipping INDoS / CoP Checker and validate the seafarer's record.",
+            "verificationMode": "auto",
+            "requiredInputs": ["INDoS number", "Seafarer date of birth"],
+            "message": "Validate the certificate of proficiency through DG Shipping using INDoS and date of birth.",
+            "strategy": "dg_cop",
+            "searchType": "COP",
+            "autoCapable": True,
+            "eligible": True,
+        }
+
+    if "flag cdc" in name or "i/10" in name or "flag endorsement" in name:
+        return {
+            "portal": "IMO GISIS",
+            "portalLabel": "IMO GISIS Certificate Verification Directory",
+            "portalUrl": links["imo_gisis_directory"],
+            "verificationMode": "directory",
+            "requiredInputs": ["Flag state or issuing authority", "Document number", "Seafarer details"],
+            "message": "Use the IMO GISIS certificate verification directory to locate the correct flag-state checker for this endorsement.",
+            "strategy": "gisis_directory",
+            "autoCapable": False,
+            "eligible": True,
+        }
+
+    if indian_document and ("cdc" in name):
+        return {
+            "portal": "DG Shipping India",
+            "portalLabel": "DG Shipping CDC Checker",
+            "portalUrl": links["dg_shipping_cdc"],
+            "verificationMode": "auto",
+            "requiredInputs": ["CDC number", "Seafarer date of birth"],
+            "message": "Validate the CDC number against the seafarer's date of birth through DG Shipping.",
+            "strategy": "dg_cdc",
+            "autoCapable": True,
+            "eligible": True,
         }
 
     return {
-        "portal": "IMO GISIS",
-        "portalLabel": "IMO GISIS Certificate Verification Directory",
-        "portalUrl": links["imo_gisis_directory"],
-        "verificationMode": "directory",
-        "requiredInputs": ["Flag state or issuing authority", "Document number", "Seafarer details"],
-        "message": "Open the IMO GISIS directory and use the relevant flag-state verification website for this document.",
+        "portal": "Crewlink AI",
+        "portalLabel": "Matrix / document completeness check",
+        "portalUrl": links["dg_shipping_home"] if indian_document else "",
+        "verificationMode": "auto",
+        "requiredInputs": [],
+        "message": "This document does not have a supported public verification portal in the current workflow and remains under AI + human checklist review.",
+        "strategy": "unsupported",
+        "autoCapable": False,
+        "eligible": False,
     }
 
 
@@ -888,6 +1096,414 @@ def _recalculate_crew(crew_id: str) -> None:
         crew["complianceIssue"] = False
 
 
+async def _run_uk_mca_check(
+    client: httpx.AsyncClient,
+    route: Dict[str, Any],
+    crew_id: str,
+    doc_name: str,
+    doc_no: str,
+) -> Dict[str, Any]:
+    profile = _crew_portal_profile(crew_id)
+    if not doc_no.strip():
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: document ID is missing on this checklist item.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    birth_date = _format_portal_date_for_uk(profile["dateOfBirth"])
+    if not birth_date:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: crew date of birth is not stored in the profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    result_url = f"{route['portalUrl'].rstrip('/')}/Certificate-Search-Results/"
+    response = await client.get(result_url, params={"documentId": doc_no.strip(), "date": birth_date})
+    response.raise_for_status()
+    text = _html_to_text(response.text)
+    lower_text = text.lower()
+
+    if "no coc record found" in lower_text:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Official UK MCA checker did not find a record for this document ID and date of birth.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=str(response.url),
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="red",
+            checklist_status="missing",
+        )
+
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=True,
+        message="Verified automatically through the official UK MCA checker.",
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=str(response.url),
+        verification_mode="auto",
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="green",
+        checklist_status="good",
+    )
+
+
+async def _run_dg_cdc_check(
+    client: httpx.AsyncClient,
+    route: Dict[str, Any],
+    crew_id: str,
+    doc_name: str,
+    doc_no: str,
+) -> Dict[str, Any]:
+    profile = _crew_portal_profile(crew_id)
+    if not doc_no.strip():
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: CDC number is missing on this checklist item.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    dob = _format_portal_date_for_dg(profile["dateOfBirth"])
+    if not dob:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: crew date of birth is not stored in the profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    response = await client.post(
+        f"{_origin_from_url(route['portalUrl'])}/IndosApplication/ajaxservlet",
+        params={"CDCno": doc_no.strip().upper(), "dob": dob},
+    )
+    response.raise_for_status()
+    text = _html_to_text(response.text)
+    lower_text = text.lower()
+
+    if "cdc details not found" in lower_text or "could not find the match of cdc no." in lower_text:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Official DG Shipping checker could not find a matching CDC record.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="red",
+            checklist_status="missing",
+        )
+
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=True,
+        message="Verified automatically through the official DG Shipping CDC checker.",
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=route["portalUrl"],
+        verification_mode="auto",
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="green",
+        checklist_status="good",
+    )
+
+
+async def _run_dg_coc_check(
+    client: httpx.AsyncClient,
+    route: Dict[str, Any],
+    crew_id: str,
+    doc_name: str,
+) -> Dict[str, Any]:
+    profile = _crew_portal_profile(crew_id)
+    indos_no = profile["indosNo"].strip()
+    dob = _format_portal_date_for_dg(profile["dateOfBirth"])
+
+    if not indos_no:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: INDoS number is not stored in the crew profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+    if not dob:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: crew date of birth is not stored in the profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    response = await client.post(
+        f"{_origin_from_url(route['portalUrl'])}/esamudraUI/jsp/examination/checker/COCSearchDetails.jsp",
+        data={"txtNo": indos_no.upper(), "txtDob": dob},
+    )
+    response.raise_for_status()
+    text = _html_to_text(response.text)
+    lower_text = text.lower()
+
+    if "could not find coc details" in lower_text:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Official DG Shipping checker could not find a matching Indian competency record.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="red",
+            checklist_status="missing",
+        )
+
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=True,
+        message="Verified automatically through the official DG Shipping competency checker.",
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=route["portalUrl"],
+        verification_mode="auto",
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="green",
+        checklist_status="good",
+    )
+
+
+async def _run_dg_indos_ajax_check(
+    client: httpx.AsyncClient,
+    route: Dict[str, Any],
+    crew_id: str,
+    doc_name: str,
+    search_type: str,
+    txt_no: str,
+) -> Dict[str, Any]:
+    profile = _crew_portal_profile(crew_id)
+    dob = _format_portal_date_for_dg(profile["dateOfBirth"])
+
+    if not txt_no.strip():
+        missing_label = "INDoS number" if search_type != "CDC" else "CDC number"
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message=f"Portal check pending: {missing_label} is not stored in the crew profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+    if not dob:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: crew date of birth is not stored in the profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    response = await client.post(
+        f"{_origin_from_url(route['portalUrl'])}/esamudraUI/checkerajaxservlet",
+        params={
+            "txtNo": txt_no.strip().upper(),
+            "dob": dob,
+            "processId": "PPIndosCheck",
+            "searchType": search_type,
+        },
+    )
+    response.raise_for_status()
+    text = _html_to_text(response.text)
+    lower_text = text.lower()
+
+    missing_patterns = {
+        "Indos": "could not find the match of INDoS No.",
+        "CDC": "could not find the match of CDC No.",
+    }
+    if missing_patterns.get(search_type, "could not find").lower() in lower_text:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message=f"Official DG Shipping checker could not find a matching {search_type} record.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="red",
+            checklist_status="missing",
+        )
+
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=True,
+        message=f"Verified automatically through the official DG Shipping {search_type} checker.",
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=route["portalUrl"],
+        verification_mode="auto",
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="green",
+        checklist_status="good",
+    )
+
+
+async def _run_dg_cop_check(
+    client: httpx.AsyncClient,
+    route: Dict[str, Any],
+    crew_id: str,
+    doc_name: str,
+) -> Dict[str, Any]:
+    profile = _crew_portal_profile(crew_id)
+    indos_no = profile["indosNo"].strip()
+    dob = _format_portal_date_for_dg(profile["dateOfBirth"])
+
+    if not indos_no:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: INDoS number is not stored in the crew profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+    if not dob:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message="Portal check pending: crew date of birth is not stored in the profile.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
+
+    response = await client.post(
+        f"{_origin_from_url(route['portalUrl'])}/esamudraUI/jsp/examination/checker/COPDetails.jsp?hidProcessMode=beforeAdd",
+        data={"cmbSearch_by": route["searchType"], "txtNo": indos_no.upper(), "txtDob": dob},
+    )
+    response.raise_for_status()
+    text = _html_to_text(response.text)
+    lower_text = text.lower()
+
+    if "could not find" in lower_text and "details" in lower_text:
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message=f"Official DG Shipping checker could not find a matching {route['searchType']} record.",
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode="auto",
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="red",
+            checklist_status="missing",
+        )
+
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=True,
+        message=f"Verified automatically through the official DG Shipping {route['searchType']} checker.",
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=route["portalUrl"],
+        verification_mode="auto",
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="green",
+        checklist_status="good",
+    )
+
+
+async def _run_official_portal_check(
+    route: Dict[str, Any],
+    crew_id: str,
+    doc_name: str,
+    doc_no: str,
+) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        strategy = route.get("strategy")
+        if strategy == "uk_mca_coc":
+            return await _run_uk_mca_check(client, route, crew_id, doc_name, doc_no)
+        if strategy == "dg_cdc":
+            return await _run_dg_cdc_check(client, route, crew_id, doc_name, doc_no)
+        if strategy == "dg_coc":
+            return await _run_dg_coc_check(client, route, crew_id, doc_name)
+        if strategy == "dg_indos":
+            profile = _crew_portal_profile(crew_id)
+            return await _run_dg_indos_ajax_check(client, route, crew_id, doc_name, "Indos", profile["indosNo"])
+        if strategy == "dg_cop":
+            return await _run_dg_cop_check(client, route, crew_id, doc_name)
+
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=False,
+        message="Portal check pending: no automated checker has been configured for this document type.",
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=route["portalUrl"],
+        verification_mode="auto",
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="yellow",
+        checklist_status="pending",
+    )
+
+
 async def _build_portal_response(
     crew_id: str,
     doc_name: str,
@@ -896,60 +1512,121 @@ async def _build_portal_response(
 ) -> Dict[str, Any]:
     portal_configuration = _portal_configuration()
     if portal_configuration["configured"]:
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.post(
-                    f"{portal_configuration['baseUrl']}/verify",
-                    headers={
-                        "Authorization": f"Bearer {os.environ.get('PORTAL_API_TOKEN', '')}".strip(),
-                    },
-                    json={
-                        "crewId": crew_id,
-                        "documentName": doc_name,
-                        "documentNumber": doc_no,
-                        "issueAuthority": issue_authority,
-                    },
+        route = _resolve_portal_route(crew_id, doc_name, doc_no, issue_authority)
+        if portal_configuration["baseUrl"]:
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    response = await client.post(
+                        f"{portal_configuration['baseUrl']}/verify",
+                        headers={
+                            "Authorization": f"Bearer {os.environ.get('PORTAL_API_TOKEN', '')}".strip(),
+                        },
+                        json={
+                            "crewId": crew_id,
+                            "documentName": doc_name,
+                            "documentNumber": doc_no,
+                            "issueAuthority": issue_authority,
+                        },
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                return _build_portal_result(
+                    doc_name=doc_name,
+                    verified=bool(payload.get("verified")),
+                    message=payload.get("message") or f"{doc_name} verified via {portal_configuration['provider']}.",
+                    portal=payload.get("portal") or portal_configuration["provider"],
+                    portal_label=payload.get("portalLabel") or payload.get("portal") or portal_configuration["provider"],
+                    portal_url=payload.get("portalUrl") or portal_configuration["baseUrl"],
+                    verification_mode="auto",
+                    required_inputs=payload.get("requiredInputs") or [],
+                    recommended_ai_status=payload.get("recommendedAiStatus") or ("green" if payload.get("verified") else "yellow"),
+                    checklist_status=payload.get("checklistStatus") or ("good" if payload.get("verified") else "pending"),
                 )
-            response.raise_for_status()
-            payload = response.json()
-            return {
-                "docName": doc_name,
-                "verified": bool(payload.get("verified")),
-                "message": payload.get("message") or f"{doc_name} verified via {portal_configuration['provider']}.",
-                "portal": payload.get("portal") or portal_configuration["provider"],
-                "portalLabel": payload.get("portalLabel") or payload.get("portal") or portal_configuration["provider"],
-                "portalUrl": payload.get("portalUrl") or portal_configuration["baseUrl"],
-                "verificationMode": "auto",
-                "requiredInputs": payload.get("requiredInputs") or [],
-            }
-        except Exception as exc:
-            return {
-                "docName": doc_name,
-                "verified": False,
-                "message": f"{portal_configuration['provider']} integration failed: {exc}",
-                "portal": portal_configuration["provider"],
-                "portalLabel": portal_configuration["provider"],
-                "portalUrl": portal_configuration["baseUrl"],
-                "verificationMode": "auto",
-                "requiredInputs": [],
-            }
+            except Exception as exc:
+                return _build_portal_result(
+                    doc_name=doc_name,
+                    verified=False,
+                    message=f"{portal_configuration['provider']} integration failed: {exc}",
+                    portal=portal_configuration["provider"],
+                    portal_label=portal_configuration["provider"],
+                    portal_url=portal_configuration["baseUrl"],
+                    verification_mode="auto",
+                    required_inputs=[],
+                    recommended_ai_status="yellow",
+                    checklist_status="pending",
+                )
+
+        if route.get("autoCapable") and _portal_live_checks_enabled():
+            try:
+                return await _run_official_portal_check(route, crew_id, doc_name, doc_no)
+            except Exception as exc:
+                return _build_portal_result(
+                    doc_name=doc_name,
+                    verified=False,
+                    message=f"Official portal automation failed: {exc}",
+                    portal=route["portal"],
+                    portal_label=route["portalLabel"],
+                    portal_url=route["portalUrl"],
+                    verification_mode="auto",
+                    required_inputs=route["requiredInputs"],
+                    recommended_ai_status="yellow",
+                    checklist_status="pending",
+                )
+
+        if not route.get("eligible"):
+            return _build_portal_result(
+                doc_name=doc_name,
+                verified=False,
+                message=route["message"],
+                portal=route["portal"],
+                portal_label=route["portalLabel"],
+                portal_url=route["portalUrl"],
+                verification_mode="auto",
+                required_inputs=route["requiredInputs"],
+                recommended_ai_status="yellow",
+                checklist_status="pending",
+            )
+
+        return _build_portal_result(
+            doc_name=doc_name,
+            verified=False,
+            message=route["message"],
+            portal=route["portal"],
+            portal_label=route["portalLabel"],
+            portal_url=route["portalUrl"],
+            verification_mode=route["verificationMode"],
+            required_inputs=route["requiredInputs"],
+            recommended_ai_status="yellow",
+            checklist_status="pending",
+        )
     route = _resolve_portal_route(crew_id, doc_name, doc_no, issue_authority)
-    return {
-        "docName": doc_name,
-        "verified": False,
-        "message": route["message"],
-        "portal": route["portal"],
-        "portalLabel": route["portalLabel"],
-        "portalUrl": route["portalUrl"],
-        "verificationMode": route["verificationMode"],
-        "requiredInputs": route["requiredInputs"],
-    }
+    return _build_portal_result(
+        doc_name=doc_name,
+        verified=False,
+        message=route["message"],
+        portal=route["portal"],
+        portal_label=route["portalLabel"],
+        portal_url=route["portalUrl"],
+        verification_mode=route["verificationMode"],
+        required_inputs=route["requiredInputs"],
+        recommended_ai_status="yellow",
+        checklist_status="pending",
+    )
 
 
 def _apply_portal_result(crew_id: str, item: Dict[str, Any], result: Dict[str, Any]) -> None:
     item["portalVerified"] = result["verified"]
     item["verifiedOps"] = result["verified"]
-    if result["verified"] and not item.get("missing"):
+    if result.get("verificationMode") == "auto":
+        item["aiStatus"] = result.get("recommendedAiStatus", item.get("aiStatus", "yellow"))
+        item["remark"] = result.get("message", item.get("remark", ""))
+        if result["verified"]:
+            item["missing"] = False
+            item["overrideStatus"] = ""
+            item["overrideReason"] = ""
+        else:
+            item["verifiedOps"] = False
+    elif result["verified"] and not item.get("missing"):
         item["aiStatus"] = "green"
         item["overrideStatus"] = ""
         item["overrideReason"] = ""
@@ -1300,7 +1977,7 @@ def get_integrations_status(current_user: Dict[str, Any] = Depends(require_user(
         "portal": {
             "provider": portal_configuration["provider"],
             "configured": portal_configuration["configured"],
-            "mode": "external" if portal_configuration["configured"] else "directory-routed",
+            "mode": "external" if portal_configuration["baseUrl"] else ("official-automation" if _portal_live_checks_enabled() else "directory-routed"),
         },
         "ai": {
             "provider": ai_configuration["provider"],
@@ -1503,16 +2180,17 @@ async def upload_document_attachment(
     item["overrideStatus"] = ""
     item["overrideReason"] = ""
     item["aiStatus"] = "yellow"
-    _recalculate_crew(crew_id)
+    portal_result = await _build_portal_response(crew_id, item["name"], item.get("docNo", ""))
+    _apply_portal_result(crew_id, item, portal_result)
     _append_audit(
         crew_id,
         actor=current_user["fullName"],
         action="attachment_uploaded",
         target=item["name"],
-        message=f"Uploaded attachment {attachment['originalName']} and queued the document for AI and portal review.",
+        message=f"Uploaded attachment {attachment['originalName']}. {portal_result['message']}",
     )
     persist_state()
-    return {"ok": True, "item": item, "summary": STATE["documents"][crew_id]["summary"]}
+    return {"ok": True, "item": item, "summary": STATE["documents"][crew_id]["summary"], "portalResult": portal_result}
 
 
 @app.post("/api/crew/{crew_id}/confirmation/{sr_no}")
@@ -1569,7 +2247,9 @@ async def verify_portal_batch(
         item
         for section in STATE["documents"][crew_id]["sections"]
         for item in section["items"]
-        if item.get("aiStatus") == "yellow" and not item.get("missing")
+        if item.get("aiStatus") == "yellow"
+        and not item.get("missing")
+        and _resolve_portal_route(crew_id, item["name"], item.get("docNo", "")).get("eligible")
     ]
 
     results = []

@@ -14,7 +14,7 @@ const PROFILE_TABS = ['Personal Details', 'Documents', 'Sea Service', 'Correspon
 function buildProfileFacts(member: CrewMember) {
   return {
     nationalityCountry: member.nationality === 'Indian' ? 'India' : member.nationality,
-    dateOfBirth: member.id === 'c001' ? '14-Feb-1986' : member.id === 'c002' ? '02-Aug-1994' : '11-Nov-1988',
+    dateOfBirth: member.dateOfBirth || (member.id === 'c001' ? '14-Feb-1986' : member.id === 'c002' ? '02-Aug-1994' : '11-Nov-1988'),
     passportCountry: member.nationality === 'Indian' ? 'India' : 'Nigeria',
     crewStatus: member.status === 'planned' ? 'Planned sign-on' : 'On board',
     email: `${member.name.toLowerCase().replace(/\s+/g, '.')}@crewlink.demo`,

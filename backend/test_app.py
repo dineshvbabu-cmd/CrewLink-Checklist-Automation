@@ -1,5 +1,8 @@
+import os
+
 from fastapi.testclient import TestClient
 
+import main
 from main import app, reset_demo_state
 
 
@@ -7,6 +10,7 @@ client = TestClient(app)
 
 
 def setup_function():
+    os.environ["PORTAL_LIVE_CHECKS"] = "0"
     reset_demo_state()
 
 
@@ -39,8 +43,8 @@ def test_batch_portal_verification_resolves_pending_documents():
 
     batch = client.post("/api/crew/c003/verify-portal-batch", headers=headers)
     assert batch.status_code == 200
-    assert batch.json()["manualCount"] == 3
-    assert batch.json()["failedCount"] == 0
+    assert batch.json()["manualCount"] == 1
+    assert batch.json()["failedCount"] == 1
 
     after = client.get("/api/crew/c003/documents", headers=headers).json()
     assert after["summary"]["pendingVerification"] == 3
@@ -61,9 +65,53 @@ def test_verify_portal_returns_official_route_details():
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["verificationMode"] == "manual"
+    assert data["verificationMode"] == "auto"
     assert data["portal"] == "DG Shipping India"
-    assert "COCSearch.jsp" in data["portalUrl"]
+    assert "DG Shipping" in data["message"]
+
+
+def test_verify_portal_applies_automated_result(monkeypatch):
+    os.environ["PORTAL_LIVE_CHECKS"] = "1"
+
+    async def fake_official_check(route, crew_id, doc_name, doc_no):
+        return {
+            "docName": doc_name,
+            "verified": True,
+            "message": "Verified automatically through a mocked official portal.",
+            "portal": route["portal"],
+            "portalLabel": route["portalLabel"],
+            "portalUrl": route["portalUrl"],
+            "verificationMode": "auto",
+            "requiredInputs": route["requiredInputs"],
+            "recommendedAiStatus": "green",
+            "checklistStatus": "good",
+        }
+
+    monkeypatch.setattr(main, "_run_official_portal_check", fake_official_check)
+
+    response = client.post(
+        "/api/crew/c003/verify-portal",
+        json={
+            "docName": "Certificate of Competency (Chief Officer)",
+            "docNo": "IND-COC-CO-2018",
+            "issueAuthority": "India",
+        },
+        headers=auth_headers("ops", "CrewlinkOps!23"),
+    )
+    assert response.status_code == 200
+    assert response.json()["verified"] is True
+    assert response.json()["recommendedAiStatus"] == "green"
+
+    after = client.get("/api/crew/c003/documents", headers=auth_headers("ops", "CrewlinkOps!23")).json()
+    competency = next(
+        item
+        for section in after["sections"]
+        for item in section["items"]
+        if item["name"] == "Certificate of Competency (Chief Officer)"
+    )
+    assert competency["verifiedOps"] is True
+    assert competency["aiStatus"] == "green"
+    assert "mocked official portal" in competency["remark"]
 
 
 def test_remark_and_override_are_logged():

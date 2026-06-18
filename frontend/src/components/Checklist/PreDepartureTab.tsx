@@ -173,17 +173,21 @@ export default function PreDepartureTab({
                                 color:
                                   verifyResult.verificationMode === 'manual' || verifyResult.verificationMode === 'directory'
                                     ? '#f39c12'
-                                    : verifyResult.verified
+                                    : verifyResult.checklistStatus === 'good'
                                       ? '#27ae60'
-                                      : '#e74c3c',
+                                      : verifyResult.checklistStatus === 'missing'
+                                        ? '#e74c3c'
+                                        : '#f39c12',
                               }}
                               className="text-xs"
                             >
                               {verifyResult.verificationMode === 'manual' || verifyResult.verificationMode === 'directory'
                                 ? 'Portal route ready'
-                                : verifyResult.verified
-                                  ? 'Verified'
-                                  : 'Not found'}
+                                : verifyResult.checklistStatus === 'good'
+                                  ? 'Good'
+                                  : verifyResult.checklistStatus === 'missing'
+                                    ? 'Missing'
+                                    : 'Pending'}
                             </span>
                             <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 120 }}>
                               {verifyResult.message}

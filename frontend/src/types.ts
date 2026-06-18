@@ -21,6 +21,8 @@ export interface CrewMember {
   name: string
   empNo: string
   nationality: string
+  dateOfBirth?: string
+  indosNo?: string
   travelDate: string
   signOnDate: string
   reliefDue: string
@@ -89,6 +91,8 @@ export interface PortalVerificationResult {
   portalUrl?: string
   verificationMode?: 'auto' | 'manual' | 'directory'
   requiredInputs?: string[]
+  recommendedAiStatus?: 'green' | 'yellow' | 'red'
+  checklistStatus?: 'good' | 'pending' | 'missing'
 }
 
 export interface PortalBatchResult {
@@ -165,7 +169,7 @@ export interface IntegrationStatus {
   portal: {
     provider: string
     configured: boolean
-    mode: 'directory-routed' | 'external'
+    mode: 'official-automation' | 'directory-routed' | 'external'
   }
   ai: {
     provider: string
