@@ -962,10 +962,15 @@ def _has_real_attachment_url(value: Any) -> bool:
 
 
 def _has_checklist_evidence(item: Dict[str, Any]) -> bool:
+    # "Imported" is the Crewlink type for placeholder checklist slots that have no
+    # real document data; verification flags on those slots don't count as evidence.
+    is_imported_placeholder = str(item.get("type") or "").strip().lower() == "imported"
+    verified = bool(item.get("verifiedRC")) or bool(item.get("verifiedOps"))
     return bool(
         _has_real_attachment_url(item.get("attachmentUrl"))
         or _crewlink_has_value(item.get("docNo"))
         or _crewlink_has_value(item.get("issueDate"))
+        or (verified and not is_imported_placeholder)
     )
 
 
@@ -1543,10 +1548,13 @@ def _crewlink_item_from_checklist(
     verified_ops = bool(raw_item.get("secondVerification") or raw_item.get("secondVerifiedOn"))
     if "review by ops" in human_remark.lower() or "ops will do" in human_remark.lower():
         verified_ops = False
+    type_raw = str(raw_item.get("type") or "").strip()
+    is_imported_placeholder = type_raw.lower() == "imported"
     has_evidence = bool(
         _has_real_attachment_url(file_path)
         or _crewlink_has_value(doc_no)
         or _crewlink_has_value(issue_date)
+        or ((verified_rc or verified_ops) and not is_imported_placeholder)
     )
     preferred = level.lower() == "preferred"
 
