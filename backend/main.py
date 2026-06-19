@@ -845,6 +845,11 @@ def _format_portal_date_for_uk(value: str) -> str:
     return parsed.strftime("%Y-%m-%d") if parsed else ""
 
 
+def _is_placeholder_date_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and (text.startswith("1900-01-01") or text == "01-Jan-1900")
+
+
 def _crew_portal_profile(crew_id: str) -> Dict[str, str]:
     crew = _find_crew_member(crew_id)
     passport_no = ""
@@ -1115,7 +1120,7 @@ def _crewlink_is_expired(value: Any) -> bool:
     if not value:
         return False
     normalized = str(value).strip()
-    if not normalized or normalized.startswith("1900-01-01"):
+    if not normalized or _is_placeholder_date_text(normalized):
         return False
     display = _format_date_display(normalized)
     parsed = _parse_display_date(display)
@@ -1154,7 +1159,7 @@ def _looks_like_system_status_remark(text: str) -> bool:
 
 def _crewlink_effective_date(value: Any) -> str:
     raw = str(value or "").strip()
-    if not raw or raw.startswith("1900-01-01"):
+    if not raw or _is_placeholder_date_text(raw):
         return ""
     return _format_date_display(raw)
 
@@ -1201,6 +1206,10 @@ def _apply_effective_human_fields(item: Dict[str, Any]) -> None:
 
 
 def _refresh_checklist_state(item: Dict[str, Any]) -> None:
+    if _is_placeholder_date_text(item.get("issueDate")):
+        item["issueDate"] = ""
+    if _is_placeholder_date_text(item.get("expiryDate")):
+        item["expiryDate"] = "NA"
     item["hasEvidence"] = _has_checklist_evidence(item)
     required = bool(item.get("required", True))
     expired = required and _crewlink_is_expired(item.get("expiryDate"))

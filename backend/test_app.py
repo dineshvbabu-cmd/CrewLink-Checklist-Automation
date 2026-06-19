@@ -348,6 +348,41 @@ def test_crewlink_license_attachment_evidence_recovers_imported_item():
     assert item["portalEvidenceSource"] == "crewlink_attachment"
 
 
+def test_hydrate_document_item_ignores_persisted_1900_expiry_placeholder():
+    item = {
+        "srNo": 8,
+        "name": "Yellow Fever Certificate",
+        "docNo": "YF-123",
+        "type": "Medical",
+        "issueDate": "31-Mar-2021",
+        "expiryDate": "01-Jan-1900",
+        "attachmentUrl": "https://example.com/yellow-fever.pdf",
+        "verifiedRC": True,
+        "verifiedOps": True,
+        "required": True,
+        "missing": False,
+        "checklistAttention": False,
+        "portalVerified": False,
+        "portalEvidenceUrl": "",
+        "portalEvidenceSource": "",
+        "rcRemark": "",
+        "opsRemark": "",
+        "rcOverrideStatus": "",
+        "rcOverrideReason": "",
+        "opsOverrideStatus": "",
+        "opsOverrideReason": "",
+        "remark": "",
+        "documentSource": "crewlink_imported",
+    }
+
+    main._hydrate_document_item("c002", item, [item["name"]])
+
+    assert item["expiryDate"] == "NA"
+    assert item["expired"] is False
+    assert item["missing"] is False
+    assert item["checklistStatus"] == "good"
+
+
 def test_crewlink_checklist_item_marks_missing_mandatory_course_red():
     item = main._crewlink_item_from_checklist(
         12,
