@@ -50,11 +50,15 @@ def utc_iso_now() -> str:
 
 
 def database_url() -> str:
-    return os.environ.get("DATABASE_URL", "").strip()
+    url = os.environ.get("DATABASE_URL", "").strip()
+    # psycopg3 requires the postgresql:// scheme; Railway often provides postgres://
+    if url.lower().startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return url
 
 
 def using_postgres() -> bool:
-    return database_url().lower().startswith(("postgres://", "postgresql://"))
+    return database_url().lower().startswith("postgresql://")
 
 
 def _redacted_database_url() -> str:
@@ -98,7 +102,7 @@ def connect() -> Iterator[Any]:
     if using_postgres():
         if psycopg is None:
             raise RuntimeError("psycopg is required when DATABASE_URL points to PostgreSQL.")
-        connection = psycopg.connect(database_url(), row_factory=dict_row)
+        connection = psycopg.connect(database_url(), row_factory=dict_row, connect_timeout=10)
     else:
         connection = sqlite3.connect(db_path(), check_same_thread=False)
         connection.row_factory = sqlite3.Row
