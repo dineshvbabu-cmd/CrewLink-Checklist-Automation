@@ -925,7 +925,27 @@ def _crewlink_has_value(value: Any) -> bool:
     if value is None:
         return False
     text = str(value).strip()
-    return bool(text and text.lower() not in {"na", "n/a", "nil", "null"})
+    return bool(text and text.lower() not in {"-", "--", "na", "n/a", "nil", "null"})
+
+
+def _is_placeholder_attachment_url(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return text.startswith("/files/") or text.endswith("/placeholder") or "/documents/" in text and "/placeholder" in text
+
+
+def _has_real_attachment_url(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and not _is_placeholder_attachment_url(text)
+
+
+def _has_checklist_evidence(item: Dict[str, Any]) -> bool:
+    return bool(
+        _has_real_attachment_url(item.get("attachmentUrl"))
+        or _crewlink_has_value(item.get("docNo"))
+        or _crewlink_has_value(item.get("issueDate"))
+    )
 
 
 def _safe_int(value: Any) -> int:
@@ -1180,6 +1200,50 @@ def _apply_effective_human_fields(item: Dict[str, Any]) -> None:
     item["remark"] = _effective_remark_for_item(item)
 
 
+def _refresh_checklist_state(item: Dict[str, Any]) -> None:
+    item["hasEvidence"] = _has_checklist_evidence(item)
+    required = bool(item.get("required", True))
+    expired = required and _crewlink_is_expired(item.get("expiryDate"))
+    item["expired"] = expired
+    imported_checklist = bool(
+        item.get("documentSource") == "crewlink_imported" or item.get("crewlinkChecklistId")
+    )
+
+    override_status, _override_reason = _effective_override_for_item(item)
+    if override_status == "green":
+        item["missing"] = False
+        item["checklistAttention"] = False
+        return
+    if override_status == "yellow":
+        item["missing"] = False
+        item["checklistAttention"] = True
+        return
+    if override_status == "red":
+        item["missing"] = True
+        item["checklistAttention"] = False
+        return
+
+    if not required:
+        item["missing"] = False
+        item["checklistAttention"] = False
+        return
+
+    item["missing"] = not item["hasEvidence"] and not expired
+    if item["missing"] or expired:
+        item["checklistAttention"] = False
+        return
+
+    if imported_checklist:
+        item["checklistAttention"] = bool(
+            _crewlink_requires_attention(_effective_remark_for_item(item))
+            or (item.get("verifiedRC", False) and not item.get("verifiedOps", False))
+            or (not item.get("verifiedRC", False) and not item.get("verifiedOps", False))
+        )
+        return
+
+    item["checklistAttention"] = bool(item.get("checklistAttention", False) or not item.get("verifiedRC", False))
+
+
 def _crewlink_item(
     sr_no: int,
     name: str,
@@ -1212,7 +1276,11 @@ def _crewlink_item(
         "overrideStatus": "",
         "overrideReason": "",
         "extractionConfidence": 0.98 if verified and not missing else 0.72,
-        "hasEvidence": bool(attachment_url or _crewlink_has_value(doc_no) or issue_date),
+        "hasEvidence": bool(
+            _has_real_attachment_url(attachment_url)
+            or _crewlink_has_value(doc_no)
+            or _crewlink_has_value(issue_date)
+        ),
         "checklistAttention": not verified and not missing,
         "checklistStatus": checklist_status,
         "portalStatus": "not_applicable",
@@ -1228,6 +1296,7 @@ def _crewlink_item(
         "portalEvidenceSource": "",
         "manualVerificationRemark": "",
         "manualVerificationBy": "",
+        "documentSource": "seed",
     }
     _apply_effective_human_fields(item)
     return item
@@ -1444,17 +1513,15 @@ def _crewlink_item_from_checklist(
     file_path = (raw_item.get("filePath") or "").strip()
     doc_no = str(raw_item.get("docNo") or "").strip()
     issue_date = _crewlink_effective_date(raw_item.get("issueDate"))
-    expiry_date = _format_date_display(raw_item.get("expiryDate")) or "NA"
+    expiry_date = _crewlink_effective_date(raw_item.get("expiryDate")) or "NA"
     verified_rc = bool(raw_item.get("firstVerification") or raw_item.get("firstVerifiedOn"))
     verified_ops = bool(raw_item.get("secondVerification") or raw_item.get("secondVerifiedOn"))
     if "review by ops" in human_remark.lower() or "ops will do" in human_remark.lower():
         verified_ops = False
     has_evidence = bool(
-        file_path
+        _has_real_attachment_url(file_path)
         or _crewlink_has_value(doc_no)
-        or issue_date
-        or verified_rc
-        or verified_ops
+        or _crewlink_has_value(issue_date)
     )
     preferred = level.lower() == "preferred"
 
@@ -1529,6 +1596,7 @@ def _crewlink_item_from_checklist(
         "portalEvidenceSource": "",
         "manualVerificationRemark": "",
         "manualVerificationBy": "",
+        "documentSource": "crewlink_imported",
         "checklistStatus": (
             "not_applicable"
             if not required
@@ -2295,7 +2363,7 @@ def _required_documents_for(crew_id: str) -> List[str]:
 
 
 def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: List[str]) -> None:
-    if not item.get("missing") and (not item.get("attachmentUrl") or str(item.get("attachmentUrl", "")).startswith("/files/")):
+    if not item.get("missing") and not _has_real_attachment_url(item.get("attachmentUrl")):
         item["attachmentUrl"] = f"/api/crew/{crew_id}/documents/{item['srNo']}/placeholder"
     elif item.get("missing"):
         item.setdefault("attachmentUrl", "")
@@ -2316,17 +2384,9 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     item.setdefault("manualVerificationBy", "")
     _apply_effective_human_fields(item)
     item.setdefault("extractionConfidence", 0.98 if item.get("verifiedRC") else 0.72)
-    item.setdefault(
-        "hasEvidence",
-        bool(
-            item.get("attachmentUrl")
-            or item.get("portalEvidenceUrl")
-            or _crewlink_has_value(item.get("docNo"))
-            or item.get("issueDate")
-        ),
-    )
     item.setdefault("checklistAttention", False)
     item["required"] = item.get("required", item["name"] in required_docs)
+    _refresh_checklist_state(item)
     route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
     item.setdefault("portalVerified", bool(item.get("portalEvidenceUrl")))
     item["portalRoute"] = _serialize_portal_route(route)

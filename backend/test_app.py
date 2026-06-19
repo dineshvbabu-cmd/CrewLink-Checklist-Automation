@@ -39,8 +39,8 @@ def test_ai_check_returns_matrix_driven_summary():
 def test_batch_portal_verification_resolves_pending_documents():
     headers = auth_headers("ops", "CrewlinkOps!23")
     before = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert before["summary"]["pendingVerification"] == 4
-    assert before["summary"]["portalPending"] == 4
+    assert before["summary"]["pendingVerification"] == 3
+    assert before["summary"]["portalPending"] == 3
 
     batch = client.post("/api/crew/c003/verify-portal-batch", headers=headers)
     assert batch.status_code == 200
@@ -48,11 +48,11 @@ def test_batch_portal_verification_resolves_pending_documents():
     assert batch.json()["failedCount"] == 3
 
     after = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert after["summary"]["pendingVerification"] == 4
-    assert after["summary"]["portalPending"] == 4
+    assert after["summary"]["pendingVerification"] == 3
+    assert after["summary"]["portalPending"] == 3
 
     ai = client.post("/api/ai/check/c003", headers=headers).json()
-    assert ai["overallStatus"] == "yellow"
+    assert ai["overallStatus"] == "red"
 
 
 def test_verify_portal_returns_official_route_details():
@@ -282,6 +282,70 @@ def test_crewlink_checklist_item_treats_na_placeholder_as_missing():
     assert item["required"] is True
     assert item["missing"] is True
     assert item["aiStatus"] == "red"
+
+
+def test_crewlink_checklist_item_does_not_treat_dash_and_review_flags_as_evidence():
+    item = main._crewlink_item_from_checklist(
+        6,
+        "flag",
+        {
+            "docname": "Flag COEC I/10",
+            "docNo": "-",
+            "type": "Imported",
+            "issueDate": "1900-01-01T00:00:00",
+            "expiryDate": "1900-01-01T00:00:00",
+            "filePath": "",
+            "firstVerification": 1185,
+            "secondVerification": 1185,
+        },
+    )
+
+    main._hydrate_document_item("c002", item, [item["name"]])
+
+    assert item["expiryDate"] == "NA"
+    assert item["hasEvidence"] is False
+    assert item["missing"] is True
+    assert item["checklistStatus"] == "missing"
+    assert item["aiStatus"] == "red"
+    assert item["attachmentUrl"] == ""
+
+
+def test_crewlink_license_attachment_evidence_recovers_imported_item():
+    item = main._crewlink_item_from_checklist(
+        7,
+        "flag",
+        {
+            "docname": "Flag CDC I/10 (Marshall Islands)",
+            "docNo": "",
+            "type": "I/10",
+            "issueDate": "1900-01-01T00:00:00",
+            "expiryDate": "1900-01-01T00:00:00",
+            "filePath": "",
+            "firstVerification": 1185,
+            "secondVerification": 1185,
+        },
+    )
+
+    main._apply_crewlink_verification_evidence(
+        item,
+        [
+            {
+                "licenseName": "Flag CDC I/10 (Marshall Islands)",
+                "attachment": "https://example.com/flag-cdc.pdf",
+                "verification": "https://example.com/flag-cdc-verification.pdf",
+                "isVerified": True,
+                "modifiedBy": "Ops Team",
+            }
+        ],
+    )
+    main._hydrate_document_item("c002", item, [item["name"]])
+
+    assert item["hasEvidence"] is True
+    assert item["missing"] is False
+    assert item["checklistStatus"] == "good"
+    assert item["portalStatus"] == "verified"
+    assert item["attachmentUrl"] == "https://example.com/flag-cdc.pdf"
+    assert item["portalEvidenceSource"] == "crewlink_attachment"
 
 
 def test_crewlink_checklist_item_marks_missing_mandatory_course_red():
