@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from html import unescape
@@ -43,7 +44,22 @@ AIStatus = Literal["green", "yellow", "red", "grey"]
 ChecklistStatus = Literal["good", "pending", "missing", "not_applicable"]
 PortalStatus = Literal["verified", "pending", "manual_review", "not_applicable", "blocked"]
 
-app = FastAPI(title="Crewlink AI-ACE Demo")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # noqa: ARG001
+    # Runs after uvicorn binds the port so the healthcheck can respond immediately.
+    try:
+        init_database(DEFAULT_STATE, SEED_USERS)
+        STATE.update(load_state())
+        if not STATE.get("audit_logs"):
+            reset_demo_state()
+        print("[startup] Database initialised.", flush=True)
+    except Exception as _exc:
+        print(f"[startup] DB init failed ({_exc!r}); running with in-memory seed state.", flush=True)
+        STATE.update(deepcopy(DEFAULT_STATE))
+    yield
+
+
+app = FastAPI(title="Crewlink AI-ACE Demo", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -3947,11 +3963,6 @@ def get_crew_report(
 def reset_demo(current_user: Dict[str, Any] = Depends(require_user({ROLE_ADMIN}))):
     reset_demo_state()
     return {"ok": True}
-
-init_database(DEFAULT_STATE, SEED_USERS)
-STATE.update(load_state())
-if not STATE.get("audit_logs"):
-    reset_demo_state()
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 assets_dir = os.path.join(static_dir, "assets")
