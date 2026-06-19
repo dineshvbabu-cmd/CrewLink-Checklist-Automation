@@ -596,12 +596,14 @@ class CrewlinkImportRequest(BaseModel):
 class RemarkRequest(BaseModel):
     remark: str
     actor: str = "RC Officer"
+    channel: Optional[Literal["rc", "ops"]] = None
 
 
 class OverrideRequest(BaseModel):
     status: Literal["green", "yellow", "red"]
     reason: str
     actor: str = "RC Officer"
+    channel: Optional[Literal["rc", "ops"]] = None
 
 
 class SendApprovalRequest(BaseModel):
@@ -1137,6 +1139,47 @@ def _crewlink_effective_date(value: Any) -> str:
     return _format_date_display(raw)
 
 
+def _clean_human_remark(text: str) -> str:
+    cleaned = (text or "").strip()
+    return "" if cleaned.lower() in {"na", "n/a"} else cleaned
+
+
+def _split_role_remarks(remark: str) -> tuple[str, str]:
+    cleaned = _clean_human_remark(remark)
+    if not cleaned:
+        return "", ""
+    if "ops" in cleaned.lower():
+        return "", cleaned
+    return cleaned, ""
+
+
+def _role_channel_for_user(current_user: Dict[str, Any], requested: Optional[str] = None) -> str:
+    if requested in {ROLE_RC, ROLE_OPS}:
+        return requested
+    if current_user["role"] == ROLE_RC:
+        return ROLE_RC
+    return ROLE_OPS
+
+
+def _effective_override_for_item(item: Dict[str, Any]) -> tuple[str, str]:
+    if item.get("opsOverrideStatus"):
+        return str(item.get("opsOverrideStatus") or ""), str(item.get("opsOverrideReason") or "")
+    if item.get("rcOverrideStatus"):
+        return str(item.get("rcOverrideStatus") or ""), str(item.get("rcOverrideReason") or "")
+    return str(item.get("overrideStatus") or ""), str(item.get("overrideReason") or "")
+
+
+def _effective_remark_for_item(item: Dict[str, Any]) -> str:
+    return str(item.get("opsRemark") or item.get("rcRemark") or item.get("remark") or "")
+
+
+def _apply_effective_human_fields(item: Dict[str, Any]) -> None:
+    override_status, override_reason = _effective_override_for_item(item)
+    item["overrideStatus"] = override_status
+    item["overrideReason"] = override_reason
+    item["remark"] = _effective_remark_for_item(item)
+
+
 def _crewlink_item(
     sr_no: int,
     name: str,
@@ -1151,7 +1194,7 @@ def _crewlink_item(
 ) -> Dict[str, Any]:
     status: AIStatus = "red" if missing else ("green" if verified else "yellow")
     checklist_status: ChecklistStatus = "missing" if missing else ("good" if verified else "pending")
-    return {
+    item = {
         "srNo": sr_no,
         "name": name,
         "docNo": doc_no,
@@ -1173,7 +1216,21 @@ def _crewlink_item(
         "checklistAttention": not verified and not missing,
         "checklistStatus": checklist_status,
         "portalStatus": "not_applicable",
+        "systemNote": "",
+        "rcRemark": "",
+        "opsRemark": "",
+        "rcOverrideStatus": "",
+        "rcOverrideReason": "",
+        "opsOverrideStatus": "",
+        "opsOverrideReason": "",
+        "portalEvidenceUrl": "",
+        "portalEvidenceName": "",
+        "portalEvidenceSource": "",
+        "manualVerificationRemark": "",
+        "manualVerificationBy": "",
     }
+    _apply_effective_human_fields(item)
+    return item
 
 
 async def _crewlink_get_json(client: httpx.AsyncClient, path: str, **params: Any) -> Any:
@@ -1382,12 +1439,16 @@ def _crewlink_item_from_checklist(
     name = _crewlink_checklist_name(raw_item.get("docname", ""))
     level = (raw_item.get("level") or "").strip()
     remark = (raw_item.get("remark1") or "").strip()
+    rc_remark, ops_remark = _split_role_remarks(remark)
+    human_remark = _clean_human_remark(remark)
     file_path = (raw_item.get("filePath") or "").strip()
     doc_no = str(raw_item.get("docNo") or "").strip()
     issue_date = _crewlink_effective_date(raw_item.get("issueDate"))
     expiry_date = _format_date_display(raw_item.get("expiryDate")) or "NA"
     verified_rc = bool(raw_item.get("firstVerification") or raw_item.get("firstVerifiedOn"))
     verified_ops = bool(raw_item.get("secondVerification") or raw_item.get("secondVerifiedOn"))
+    if "review by ops" in human_remark.lower() or "ops will do" in human_remark.lower():
+        verified_ops = False
     has_evidence = bool(
         file_path
         or _crewlink_has_value(doc_no)
@@ -1396,17 +1457,11 @@ def _crewlink_item_from_checklist(
         or verified_ops
     )
     preferred = level.lower() == "preferred"
-    not_applicable = (
-        remark.lower() in {"na", "n/a"}
-        and not has_evidence
-        and not verified_rc
-        and not verified_ops
-    )
 
     if section_kind in {"course", "other"}:
         required = level.lower() == "mandatory"
     else:
-        required = not preferred and not not_applicable
+        required = not preferred
 
     missing = required and not has_evidence
     expired = required and _crewlink_is_expired(raw_item.get("expiryDate"))
@@ -1415,7 +1470,7 @@ def _crewlink_item_from_checklist(
         and not missing
         and not expired
         and (
-            _crewlink_requires_attention(remark)
+            _crewlink_requires_attention(human_remark)
             or (verified_rc and not verified_ops)
             or (not verified_rc and not verified_ops)
         )
@@ -1430,13 +1485,13 @@ def _crewlink_item_from_checklist(
     else:
         ai_status = "grey"
 
-    final_remark = remark
-    if not final_remark and missing:
-        final_remark = "Required by Crewlink checklist but the document is not attached."
-    elif not final_remark and expired:
-        final_remark = "Document appears expired in Crewlink."
-    elif not final_remark and pending:
-        final_remark = "Checklist verification is pending."
+    system_note = ""
+    if missing:
+        system_note = "Required by Crewlink checklist but the document is not attached."
+    elif expired:
+        system_note = "Document appears expired in Crewlink."
+    elif pending:
+        system_note = "Checklist verification is pending."
 
     type_label = str(raw_item.get("type") or "").strip() or _doc_type_from_name(name)
     item = {
@@ -1446,11 +1501,11 @@ def _crewlink_item_from_checklist(
         "type": type_label,
         "issueDate": issue_date or "",
         "expiryDate": expiry_date,
-        "verifiedRC": verified_rc or verified_ops,
-        "verifiedOps": False,
+        "verifiedRC": verified_rc,
+        "verifiedOps": verified_ops,
         "portalVerified": False,
         "aiStatus": ai_status,
-        "remark": final_remark,
+        "remark": human_remark,
         "missing": missing,
         "expired": expired,
         "attachmentUrl": file_path,
@@ -1462,6 +1517,18 @@ def _crewlink_item_from_checklist(
         "extractionConfidence": 0.99 if has_evidence else 0.7,
         "hasEvidence": has_evidence,
         "checklistAttention": pending,
+        "systemNote": system_note,
+        "rcRemark": rc_remark,
+        "opsRemark": ops_remark,
+        "rcOverrideStatus": "",
+        "rcOverrideReason": "",
+        "opsOverrideStatus": "",
+        "opsOverrideReason": "",
+        "portalEvidenceUrl": "",
+        "portalEvidenceName": "",
+        "portalEvidenceSource": "",
+        "manualVerificationRemark": "",
+        "manualVerificationBy": "",
         "checklistStatus": (
             "not_applicable"
             if not required
@@ -1477,6 +1544,7 @@ def _crewlink_item_from_checklist(
     }
     if raw_item.get("checkListId"):
         item["crewlinkChecklistId"] = raw_item["checkListId"]
+    _apply_effective_human_fields(item)
     return item
 
 
@@ -1517,9 +1585,41 @@ def _append_missing_matrix_requirements(
     return sr_no
 
 
+def _apply_crewlink_verification_evidence(item: Dict[str, Any], license_records: List[Dict[str, Any]]) -> None:
+    item_name = item.get("name", "").strip().lower()
+    item_doc_no = str(item.get("docNo") or "").strip().lower()
+    matched_record = None
+    for record in license_records:
+        record_name = _crewlink_license_to_name(record).strip().lower()
+        record_doc_no = str(record.get("licenseNumber") or "").strip().lower()
+        if item_doc_no and record_doc_no and item_doc_no == record_doc_no:
+            matched_record = record
+            break
+        if item_name and record_name and item_name == record_name:
+            matched_record = record
+            break
+    if not matched_record:
+        return
+
+    verification_url = str(matched_record.get("verification") or "").strip()
+    if verification_url or matched_record.get("isVerified"):
+        item["portalVerified"] = True
+        item["portalEvidenceUrl"] = verification_url
+        item["portalEvidenceName"] = f"{item['name']} verification evidence" if verification_url else ""
+        item["portalEvidenceSource"] = "crewlink_attachment"
+        if not item.get("manualVerificationBy"):
+            item["manualVerificationBy"] = str(matched_record.get("modifiedBy") or "").strip()
+    if not item.get("attachmentUrl"):
+        attachment_url = str(matched_record.get("attachment") or "").strip()
+        if attachment_url:
+            item["attachmentUrl"] = attachment_url
+            item["attachmentName"] = item["name"]
+
+
 def _crewlink_build_checklist_documents(
     checklist_sections: Dict[str, List[Dict[str, Any]]],
     matrix_requirements: List[Dict[str, Any]],
+    bundle: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     sections: List[Dict[str, Any]] = []
     sr_no = 1
@@ -1537,6 +1637,11 @@ def _crewlink_build_checklist_documents(
         return None
 
     _append_missing_matrix_requirements(sections, matrix_requirements, sr_no)
+    license_records = (bundle or {}).get("licenses") or []
+    for section in sections:
+        for item in section["items"]:
+            _apply_crewlink_verification_evidence(item, license_records)
+            _apply_effective_human_fields(item)
 
     return {"sections": sections, "summary": {"valid": 0, "pendingVerification": 0, "missing": 0, "expired": 0}}
 
@@ -1590,7 +1695,7 @@ def _crewlink_build_documents(
     checklist_sections: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
     resolved_matrix_requirements = matrix_requirements or _fallback_matrix_requirements(rank_code)
-    checklist_docs = _crewlink_build_checklist_documents(checklist_sections or {}, resolved_matrix_requirements)
+    checklist_docs = _crewlink_build_checklist_documents(checklist_sections or {}, resolved_matrix_requirements, bundle)
     if checklist_docs:
         return checklist_docs
 
@@ -1665,6 +1770,7 @@ def _crewlink_build_documents(
                 attachment_url=license_item.get("attachment", ""),
             )
         )
+        _apply_crewlink_verification_evidence(license_items[-1], [license_item])
         sr_no += 1
     if license_items:
         sections.append({"title": "License (National & Flag)", "items": license_items})
@@ -1912,7 +2018,7 @@ def _serialize_portal_route(route: Dict[str, Any]) -> Dict[str, Any]:
 def _derive_checklist_status(item: Dict[str, Any]) -> ChecklistStatus:
     if not item.get("required", True):
         return "not_applicable"
-    override = item.get("overrideStatus")
+    override, _override_reason = _effective_override_for_item(item)
     if override == "green":
         return "good"
     if override == "yellow":
@@ -1933,12 +2039,10 @@ def _derive_portal_status(
     crewlink_imported: bool,
     checklist_status: ChecklistStatus,
 ) -> PortalStatus:
-    if not item.get("required", True):
-        return "not_applicable"
-    if checklist_status in {"missing", "pending"}:
-        return "blocked"
     if item.get("portalVerified", False):
         return "verified"
+    if not item.get("required", True):
+        return "not_applicable"
     if not route.get("eligible"):
         return "not_applicable"
     if route.get("autoCapable"):
@@ -2198,12 +2302,33 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     item.setdefault("attachmentName", f"{item['name']}.pdf" if not item.get("missing") else "")
     item.setdefault("overrideStatus", "")
     item.setdefault("overrideReason", "")
+    item.setdefault("systemNote", "")
+    item.setdefault("rcRemark", "")
+    item.setdefault("opsRemark", "")
+    item.setdefault("rcOverrideStatus", "")
+    item.setdefault("rcOverrideReason", "")
+    item.setdefault("opsOverrideStatus", "")
+    item.setdefault("opsOverrideReason", "")
+    item.setdefault("portalEvidenceUrl", "")
+    item.setdefault("portalEvidenceName", "")
+    item.setdefault("portalEvidenceSource", "")
+    item.setdefault("manualVerificationRemark", "")
+    item.setdefault("manualVerificationBy", "")
+    _apply_effective_human_fields(item)
     item.setdefault("extractionConfidence", 0.98 if item.get("verifiedRC") else 0.72)
-    item.setdefault("hasEvidence", bool(item.get("attachmentUrl") or _crewlink_has_value(item.get("docNo")) or item.get("issueDate")))
+    item.setdefault(
+        "hasEvidence",
+        bool(
+            item.get("attachmentUrl")
+            or item.get("portalEvidenceUrl")
+            or _crewlink_has_value(item.get("docNo"))
+            or item.get("issueDate")
+        ),
+    )
     item.setdefault("checklistAttention", False)
     item["required"] = item.get("required", item["name"] in required_docs)
     route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
-    item.setdefault("portalVerified", bool(item.get("verifiedOps")) and route.get("eligible", False))
+    item.setdefault("portalVerified", bool(item.get("portalEvidenceUrl")))
     item["portalRoute"] = _serialize_portal_route(route)
     item["checklistStatus"] = _derive_checklist_status(item)
     item["portalStatus"] = _derive_portal_status(
@@ -2255,17 +2380,26 @@ def _recalculate_crew(crew_id: str) -> None:
         )
         checklist_status = item["checklistStatus"]
         portal_status = item["portalStatus"]
-        current_remark = item.get("remark", "")
-        can_replace_remark = not current_remark or _looks_like_system_status_remark(current_remark)
-
-        if item["required"] and checklist_status == "good" and portal_status == "pending" and can_replace_remark:
-            item["remark"] = f"Portal verification pending through {route['portalLabel']}."
-        elif item["required"] and checklist_status == "good" and portal_status == "manual_review" and can_replace_remark:
-            item["remark"] = f"Manual portal review required through {route['portalLabel']}."
-        elif item["required"] and checklist_status == "pending" and can_replace_remark:
-            item["remark"] = "Checklist review is still pending."
-        elif item["required"] and checklist_status == "good" and portal_status == "not_applicable" and can_replace_remark:
-            item["remark"] = ""
+        existing_system_note = str(item.get("systemNote") or "")
+        if item["required"] and checklist_status == "missing":
+            item["systemNote"] = "Required by Crewlink matrix but missing from the checklist evidence."
+        elif item["required"] and item.get("expired", False):
+            item["systemNote"] = "Document is expired in Crewlink."
+        elif item["required"] and checklist_status == "pending":
+            item["systemNote"] = "Checklist review is still pending."
+        elif item["required"] and portal_status == "verified" and item.get("portalEvidenceSource") == "crewlink_attachment":
+            item["systemNote"] = "Crewlink already has verification evidence attached for this document."
+        elif item["required"] and portal_status == "verified" and existing_system_note:
+            item["systemNote"] = existing_system_note
+        elif item["required"] and portal_status == "pending":
+            item["systemNote"] = f"Portal verification is still pending through {route['portalLabel']}."
+        elif item["required"] and portal_status == "manual_review":
+            item["systemNote"] = f"Manual portal review is still required through {route['portalLabel']}."
+        elif route.get("verificationMode") == "review" and existing_system_note:
+            item["systemNote"] = existing_system_note
+        else:
+            item["systemNote"] = ""
+        _apply_effective_human_fields(item)
 
         if item["required"] and item.get("expired", False):
             expired += 1
@@ -2839,18 +2973,15 @@ async def _build_portal_response(
 
 def _apply_portal_result(crew_id: str, item: Dict[str, Any], result: Dict[str, Any]) -> None:
     item["portalVerified"] = result["verified"]
-    item["verifiedOps"] = result["verified"]
+    if result["verified"]:
+        item["portalEvidenceSource"] = (
+            "official_portal"
+            if result.get("verificationMode") == "auto"
+            else "manual_review"
+        )
     item["portalStatus"] = result.get("portalStatus", item.get("portalStatus", "pending"))
-    if result.get("verificationMode") == "auto":
-        item["remark"] = result.get("message", item.get("remark", ""))
-        if result["verified"]:
-            item["missing"] = False
-        else:
-            item["verifiedOps"] = False
-    elif result.get("verificationMode") == "review":
-        item["remark"] = result.get("message", item.get("remark", ""))
-        item["verifiedOps"] = False
-    elif result["verified"] and not item.get("missing"):
+    item["systemNote"] = result.get("message", item.get("systemNote", ""))
+    if result["verified"] and not item.get("missing"):
         item["portalStatus"] = "verified"
     _recalculate_crew(crew_id)
 
@@ -3372,13 +3503,18 @@ def save_remark(
     current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
 ):
     item = _find_document(crew_id, sr_no)
-    item["remark"] = request.remark
+    channel = _role_channel_for_user(current_user, request.channel)
+    if channel == ROLE_OPS:
+        item["opsRemark"] = request.remark
+    else:
+        item["rcRemark"] = request.remark
+    _apply_effective_human_fields(item)
     _append_audit(
         crew_id,
         actor=current_user["fullName"],
         action="remark_updated",
         target=item["name"],
-        message=f"Updated remark to '{request.remark}'.",
+        message=f"Updated {channel.upper()} remark to '{request.remark}'.",
     )
     persist_state()
     return {"ok": True, "item": item}
@@ -3389,16 +3525,23 @@ def override_document_status(
     crew_id: str,
     sr_no: int,
     request: OverrideRequest,
-    current_user: Dict[str, Any] = Depends(require_user({ROLE_OPS, ROLE_ADMIN})),
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
 ):
     item = _find_document(crew_id, sr_no)
-    item["overrideStatus"] = request.status
-    item["overrideReason"] = request.reason
-    if request.status == "green":
+    channel = _role_channel_for_user(current_user, request.channel)
+    if channel == ROLE_OPS:
+        item["opsOverrideStatus"] = request.status
+        item["opsOverrideReason"] = request.reason
+    else:
+        item["rcOverrideStatus"] = request.status
+        item["rcOverrideReason"] = request.reason
+    _apply_effective_human_fields(item)
+    effective_status = item.get("overrideStatus")
+    if effective_status == "green":
         item["missing"] = False
         item["verifiedRC"] = True
         item["checklistAttention"] = False
-    elif request.status == "yellow":
+    elif effective_status == "yellow":
         item["missing"] = False
         item["checklistAttention"] = True
     else:
@@ -3418,7 +3561,39 @@ def override_document_status(
         actor=current_user["fullName"],
         action="override",
         target=item["name"],
-        message=f"Overrode AI status to {request.status.upper()} with reason: {request.reason}",
+        message=f"{channel.upper()} overrode AI status to {request.status.upper()} with reason: {request.reason}",
+    )
+    persist_state()
+    return {"ok": True, "item": item, "summary": STATE["documents"][crew_id]["summary"]}
+
+
+@app.post("/api/crew/{crew_id}/documents/{sr_no}/manual-verify")
+def manual_verify_document(
+    crew_id: str,
+    sr_no: int,
+    request: ManualVerificationRequest,
+    current_user: Dict[str, Any] = Depends(require_user({ROLE_RC, ROLE_OPS, ROLE_ADMIN})),
+):
+    item = _find_document(crew_id, sr_no)
+    item["portalVerified"] = bool(request.verified)
+    item["portalEvidenceSource"] = "manual_review"
+    item["manualVerificationRemark"] = request.remark
+    item["manualVerificationBy"] = current_user["fullName"]
+    item["portalStatus"] = "verified" if request.verified else "manual_review"
+    if request.verified:
+        item["systemNote"] = "Manual verification completed by the review team."
+    else:
+        item["systemNote"] = request.remark or "Manual verification is still required."
+    _recalculate_crew(crew_id)
+    _append_audit(
+        crew_id,
+        actor=current_user["fullName"],
+        action="manual_verification",
+        target=item["name"],
+        message=(
+            f"Manual verification marked as {'verified' if request.verified else 'pending'}."
+            f"{f' Remark: {request.remark}' if request.remark else ''}"
+        ),
     )
     persist_state()
     return {"ok": True, "item": item, "summary": STATE["documents"][crew_id]["summary"]}
@@ -3446,10 +3621,16 @@ async def upload_document_attachment(
     item["attachmentName"] = attachment["originalName"]
     item["missing"] = False
     item["verifiedRC"] = True
-    item["verifiedOps"] = False
     item["portalVerified"] = False
+    item["portalEvidenceSource"] = ""
+    item["manualVerificationRemark"] = ""
+    item["manualVerificationBy"] = ""
     item["overrideStatus"] = ""
     item["overrideReason"] = ""
+    item["rcOverrideStatus"] = ""
+    item["rcOverrideReason"] = ""
+    item["opsOverrideStatus"] = ""
+    item["opsOverrideReason"] = ""
     item["aiStatus"] = "yellow"
     route = _resolve_portal_route(crew_id, item["name"], item.get("docNo", ""))
     if route.get("eligible"):
@@ -3458,12 +3639,12 @@ async def upload_document_attachment(
     else:
         review_status = _review_status_for_item(item)
         item["aiStatus"] = review_status
-        item["remark"] = "Document uploaded and matched to the checklist. No supported public portal is configured for this document type, so it remains under AI + human checklist review."
+        item["systemNote"] = "Document uploaded and matched to the checklist. No supported public portal is configured for this document type, so it remains under AI + human checklist review."
         _recalculate_crew(crew_id)
         portal_result = _build_portal_result(
             doc_name=item["name"],
             verified=False,
-            message=item["remark"],
+            message=item["systemNote"],
             portal=route["portal"],
             portal_label=route["portalLabel"],
             portal_url=route["portalUrl"],

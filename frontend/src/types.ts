@@ -72,6 +72,18 @@ export interface DocumentItem {
   portalStatus?: PortalStatus
   hasEvidence?: boolean
   checklistAttention?: boolean
+  systemNote?: string
+  rcRemark?: string
+  opsRemark?: string
+  rcOverrideStatus?: string
+  rcOverrideReason?: string
+  opsOverrideStatus?: string
+  opsOverrideReason?: string
+  portalEvidenceUrl?: string
+  portalEvidenceName?: string
+  portalEvidenceSource?: string
+  manualVerificationRemark?: string
+  manualVerificationBy?: string
 }
 
 export interface DocumentSection {

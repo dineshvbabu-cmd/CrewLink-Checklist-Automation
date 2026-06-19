@@ -1,6 +1,6 @@
 import { Fragment } from 'react'
 import { Paperclip } from 'lucide-react'
-import type { DocumentsData, PortalVerificationResult, PortalStatus, ChecklistStatus } from '../../types'
+import type { DocumentsData, DocumentItem, PortalVerificationResult, PortalStatus, ChecklistStatus } from '../../types'
 import TrafficLight from '../Common/TrafficLight'
 
 const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
@@ -48,6 +48,13 @@ function confidenceLabel(score?: number) {
   return `${Math.round(score * 100)}%`
 }
 
+function statusLabel(status?: string) {
+  if (status === 'green') return 'Good'
+  if (status === 'yellow') return 'Pending'
+  if (status === 'red') return 'Missing'
+  return '-'
+}
+
 interface Props {
   data: DocumentsData
   approvedBy?: string
@@ -59,26 +66,32 @@ interface Props {
   inlineEditor: {
     srNo: number
     name: string
-    remarkValue: string
-    overrideStatus: 'green' | 'yellow' | 'red'
-    overrideReason: string
+    rcRemark: string
+    opsRemark: string
+    rcOverrideStatus: 'green' | 'yellow' | 'red'
+    rcOverrideReason: string
+    opsOverrideStatus: 'green' | 'yellow' | 'red'
+    opsOverrideReason: string
+    manualVerified: boolean
+    manualRemark: string
   } | null
-  onOpenInlineEditor: (item: {
-    srNo: number
-    name: string
-    currentRemark: string
-    currentStatus: 'green' | 'yellow' | 'red'
-  }) => void
+  onOpenInlineEditor: (payload: { item: DocumentItem }) => void
   onCloseInlineEditor: () => void
-  onInlineRemarkChange: (value: string) => void
-  onInlineOverrideStatusChange: (status: 'green' | 'yellow' | 'red') => void
-  onInlineOverrideReasonChange: (value: string) => void
-  onSaveRemark: () => void
-  onSaveOverride: () => void
+  onInlineRemarkChange: (channel: 'rc' | 'ops', value: string) => void
+  onInlineOverrideStatusChange: (channel: 'rc' | 'ops', status: 'green' | 'yellow' | 'red') => void
+  onInlineOverrideReasonChange: (channel: 'rc' | 'ops', value: string) => void
+  onInlineManualVerifiedChange: (value: boolean) => void
+  onInlineManualRemarkChange: (value: string) => void
+  onSaveRemark: (channel: 'rc' | 'ops') => void
+  onSaveOverride: (channel: 'rc' | 'ops') => void
+  onSaveManualVerification: () => void
   onUploadAttachment: (srNo: number, file: File) => void
   canEditRemark: boolean
-  canOverride: boolean
+  canRcOverride: boolean
+  canOpsOverride: boolean
   canUpload: boolean
+  canManualVerify: boolean
+  userRole?: 'admin' | 'rc' | 'ops'
 }
 
 export default function PreDepartureTab({
@@ -95,12 +108,18 @@ export default function PreDepartureTab({
   onInlineRemarkChange,
   onInlineOverrideStatusChange,
   onInlineOverrideReasonChange,
+  onInlineManualVerifiedChange,
+  onInlineManualRemarkChange,
   onSaveRemark,
   onSaveOverride,
+  onSaveManualVerification,
   onUploadAttachment,
   canEditRemark,
-  canOverride,
+  canRcOverride,
+  canOpsOverride,
   canUpload,
+  canManualVerify,
+  userRole,
 }: Props) {
   let srCounter = 0
 
@@ -159,15 +178,20 @@ export default function PreDepartureTab({
                   const verifyResult = verificationResults[item.name]
                   const isEditorOpen = inlineEditor?.srNo === item.srNo
                   const canShowCombinedEditor =
-                    canEditRemark || (canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow'))
+                    canEditRemark
+                    || (canRcOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.rcOverrideStatus))
+                    || (canOpsOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.opsOverrideStatus))
+                    || canManualVerify
                   const displayStatus = item.overrideStatus || item.aiStatus
-                  const showOverrideSection = canOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.overrideStatus)
+                  const showRcOverride = canRcOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.rcOverrideStatus)
+                  const showOpsOverride = canOpsOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.opsOverrideStatus)
                   const checklistView = checklistPresentation(item.checklistStatus)
                   const portalView = portalPresentation(item.portalStatus, verifyResult)
                   const portalRoute = item.portalRoute
                   const routeNeedsManualReview = portalRoute?.eligible && !portalRoute?.autoCapable
                   const routeIsUnsupported = portalRoute && portalRoute.eligible === false
                   const canAutoVerify = portalRoute?.autoCapable && item.portalStatus === 'pending'
+                  const canMarkManual = canManualVerify && item.portalStatus !== 'verified' && item.required
 
                   return (
                     <Fragment key={`${section.title}-${item.srNo}`}>
@@ -226,7 +250,24 @@ export default function PreDepartureTab({
                           </div>
                         </td>
                         <td>
-                          {verifyResult?.portalUrl ? (
+                          {item.portalEvidenceUrl ? (
+                            <div>
+                              <span style={{ color: portalView.color }} className="text-xs font-semibold">
+                                {portalView.label}
+                              </span>
+                              <div className="text-xs text-gray-500 leading-tight" style={{ maxWidth: 150 }}>
+                                Existing Crewlink verification evidence found.
+                              </div>
+                              <a
+                                href={item.portalEvidenceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="link-blue text-[10px]"
+                              >
+                                Open verification attachment
+                              </a>
+                            </div>
+                          ) : verifyResult?.portalUrl ? (
                             <div>
                               <span style={{ color: portalView.color }} className="text-xs font-semibold">
                                 {portalView.label}
@@ -285,20 +326,30 @@ export default function PreDepartureTab({
                               </div>
                             </div>
                           ) : canAutoVerify ? (
-                            <button
-                              onClick={() => onVerifyDocument(item.name, item.docNo)}
-                              disabled={verifyingDoc === item.name}
-                              className="link-blue text-xs hover:underline"
-                            >
-                              {verifyingDoc === item.name ? (
-                                <span className="flex items-center gap-1">
-                                  <span className="animate-spin inline-block w-2.5 h-2.5 border border-blue-500 border-t-transparent rounded-full" />
-                                  Checking...
-                                </span>
-                              ) : (
-                                'Run portal check'
+                            <div className="flex flex-col gap-1">
+                              <button
+                                onClick={() => onVerifyDocument(item.name, item.docNo)}
+                                disabled={verifyingDoc === item.name}
+                                className="link-blue text-xs hover:underline text-left"
+                              >
+                                {verifyingDoc === item.name ? (
+                                  <span className="flex items-center gap-1">
+                                    <span className="animate-spin inline-block w-2.5 h-2.5 border border-blue-500 border-t-transparent rounded-full" />
+                                    Checking...
+                                  </span>
+                                ) : (
+                                  'Run portal check'
+                                )}
+                              </button>
+                              {canMarkManual && (
+                                <button
+                                  className="link-blue text-[10px] text-left"
+                                  onClick={() => onOpenInlineEditor({ item })}
+                                >
+                                  Manual verify
+                                </button>
                               )}
-                            </button>
+                            </div>
                           ) : verifyResult ? (
                             <div>
                               <span style={{ color: portalView.color }} className="text-xs font-semibold">
@@ -309,7 +360,17 @@ export default function PreDepartureTab({
                               </div>
                             </div>
                           ) : (
-                            <span className="text-gray-300 text-xs">-</span>
+                            <div className="flex flex-col gap-1">
+                              <span className="text-gray-300 text-xs">-</span>
+                              {canMarkManual && (
+                                <button
+                                  className="link-blue text-[10px] text-left"
+                                  onClick={() => onOpenInlineEditor({ item })}
+                                >
+                                  Manual verify
+                                </button>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="text-center">
@@ -326,13 +387,14 @@ export default function PreDepartureTab({
                         </td>
                         <td>
                           <div className="flex flex-col gap-1">
-                            {item.remark ? (
-                              <span style={{ color: isMissing ? '#e67e22' : '#555' }} className="text-xs italic">
-                                {item.remark}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-gray-400 italic">No remark</span>
+                            {item.rcRemark ? <span className="text-[11px] text-slate-700">RC: {item.rcRemark}</span> : null}
+                            {item.opsRemark ? <span className="text-[11px] text-slate-700">OPS: {item.opsRemark}</span> : null}
+                            {!item.rcRemark && !item.opsRemark && (
+                              <span className="text-xs text-gray-400 italic">No RC / OPS remark</span>
                             )}
+                            {item.systemNote ? (
+                              <span className="text-[10px] text-slate-500">System: {item.systemNote}</span>
+                            ) : null}
                             {item.overrideStatus && item.overrideReason && (
                               <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1">
                                 <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
@@ -341,35 +403,48 @@ export default function PreDepartureTab({
                                 <div className="text-xs text-amber-900">{item.overrideReason}</div>
                               </div>
                             )}
+                            {item.manualVerificationRemark ? (
+                              <div className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                                  Manual verification
+                                </div>
+                                <div className="text-xs text-emerald-900">
+                                  {item.manualVerificationRemark}
+                                  {item.manualVerificationBy ? ` (${item.manualVerificationBy})` : ''}
+                                </div>
+                              </div>
+                            ) : null}
                             <div className="flex gap-2 flex-wrap">
                               {canEditRemark && (
                                 <button
                                   className="link-blue text-xs"
-                                  onClick={() =>
-                                    onOpenInlineEditor({
-                                      srNo: item.srNo,
-                                      name: item.name,
-                                      currentRemark: item.remark,
-                                      currentStatus: item.aiStatus,
-                                    })
-                                  }
+                                  onClick={() => onOpenInlineEditor({ item })}
                                 >
-                                  {isEditorOpen ? 'Hide Editor' : item.remark ? 'Edit Remark' : 'Add Remark'}
+                                  {isEditorOpen ? 'Hide Editor' : 'Remarks / AI'}
                                 </button>
                               )}
-                              {showOverrideSection && (
+                              {showRcOverride && (
                                 <button
                                   className="link-blue text-xs"
-                                  onClick={() =>
-                                    onOpenInlineEditor({
-                                      srNo: item.srNo,
-                                      name: item.name,
-                                      currentRemark: item.remark,
-                                      currentStatus: (item.overrideStatus || item.aiStatus) as 'green' | 'yellow' | 'red',
-                                    })
-                                  }
+                                  onClick={() => onOpenInlineEditor({ item })}
                                 >
-                                  {item.overrideStatus ? 'Edit Override AI' : 'Override AI'}
+                                  {item.rcOverrideStatus ? 'Edit RC Override' : 'RC Override AI'}
+                                </button>
+                              )}
+                              {showOpsOverride && (
+                                <button
+                                  className="link-blue text-xs"
+                                  onClick={() => onOpenInlineEditor({ item })}
+                                >
+                                  {item.opsOverrideStatus ? 'Edit OPS Override' : 'OPS Override AI'}
+                                </button>
+                              )}
+                              {canMarkManual && (
+                                <button
+                                  className="link-blue text-xs"
+                                  onClick={() => onOpenInlineEditor({ item })}
+                                >
+                                  Manual verify
                                 </button>
                               )}
                             </div>
@@ -379,64 +454,157 @@ export default function PreDepartureTab({
                       {isEditorOpen && inlineEditor && canShowCombinedEditor && (
                         <tr>
                           <td colSpan={12} className="bg-slate-50 px-4 py-4">
-                            <div className={`grid gap-4 ${showOverrideSection ? 'lg:grid-cols-2' : 'grid-cols-1'}`}>
+                            <div className="grid gap-4 lg:grid-cols-2">
                               {canEditRemark && (
                                 <div className="rounded border border-slate-200 bg-white p-4">
-                                  <div className="text-sm font-semibold text-slate-900">Remark</div>
+                                  <div className="text-sm font-semibold text-slate-900">RC / OPS Remarks</div>
                                   <div className="mt-1 text-xs text-slate-500">{inlineEditor.name}</div>
-                                  <textarea
-                                    value={inlineEditor.remarkValue}
-                                    onChange={event => onInlineRemarkChange(event.target.value)}
-                                    rows={4}
-                                    className="mt-3 w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                                  />
+                                  <div className="mt-3 space-y-4">
+                                    <div>
+                                      <div className="text-xs font-semibold text-slate-600">RC remark</div>
+                                      <textarea
+                                        value={inlineEditor.rcRemark}
+                                        onChange={event => onInlineRemarkChange('rc', event.target.value)}
+                                        rows={3}
+                                        className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                      />
+                                      <div className="mt-2 flex justify-end">
+                                        <button
+                                          className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
+                                          disabled={savingEditor || userRole === 'ops'}
+                                          onClick={() => onSaveRemark('rc')}
+                                        >
+                                          {savingEditor ? 'Saving...' : 'Save RC Remark'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-xs font-semibold text-slate-600">OPS remark</div>
+                                      <textarea
+                                        value={inlineEditor.opsRemark}
+                                        onChange={event => onInlineRemarkChange('ops', event.target.value)}
+                                        rows={3}
+                                        className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                      />
+                                      <div className="mt-2 flex justify-end">
+                                        <button
+                                          className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
+                                          disabled={savingEditor || userRole === 'rc'}
+                                          onClick={() => onSaveRemark('ops')}
+                                        >
+                                          {savingEditor ? 'Saving...' : 'Save OPS Remark'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
                                   <div className="mt-3 flex justify-end gap-2">
                                     <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={onCloseInlineEditor}>
                                       Close
-                                    </button>
-                                    <button
-                                      className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
-                                      disabled={savingEditor}
-                                      onClick={onSaveRemark}
-                                    >
-                                      {savingEditor ? 'Saving...' : 'Save Remark'}
                                     </button>
                                   </div>
                                 </div>
                               )}
 
-                              {showOverrideSection && (
+                              {(showRcOverride || showOpsOverride || canMarkManual) && (
                                 <div className="rounded border border-amber-200 bg-amber-50 p-4">
-                                  <div className="text-sm font-semibold text-slate-900">AI Override</div>
+                                  <div className="text-sm font-semibold text-slate-900">Override / Manual Verification</div>
                                   <div className="mt-1 text-xs text-slate-500">
-                                    Set the AI outcome clearly as Good, Pending, or Missing and record the reason.
+                                    RC and OPS can keep separate override decisions here. Manual verification is a separate portal activity.
                                   </div>
-                                  <select
-                                    value={inlineEditor.overrideStatus}
-                                    onChange={event => onInlineOverrideStatusChange(event.target.value as 'green' | 'yellow' | 'red')}
-                                    className="mt-3 w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                                  >
-                                    <option value="green">Good</option>
-                                    <option value="yellow">Pending</option>
-                                    <option value="red">Missing</option>
-                                  </select>
-                                  <textarea
-                                    value={inlineEditor.overrideReason}
-                                    onChange={event => onInlineOverrideReasonChange(event.target.value)}
-                                    rows={4}
-                                    placeholder="Explain why the AI status is being overridden"
-                                    className="mt-3 w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                                  />
+                                  <div className="mt-3 space-y-4">
+                                    {showRcOverride && (
+                                      <div className="rounded border border-amber-200 bg-white p-3">
+                                        <div className="text-xs font-semibold text-slate-600">RC override AI</div>
+                                        <select
+                                          value={inlineEditor.rcOverrideStatus}
+                                          onChange={event => onInlineOverrideStatusChange('rc', event.target.value as 'green' | 'yellow' | 'red')}
+                                          className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                        >
+                                          <option value="green">Good</option>
+                                          <option value="yellow">Pending</option>
+                                          <option value="red">Missing</option>
+                                        </select>
+                                        <textarea
+                                          value={inlineEditor.rcOverrideReason}
+                                          onChange={event => onInlineOverrideReasonChange('rc', event.target.value)}
+                                          rows={3}
+                                          placeholder="Explain the RC override"
+                                          className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                        />
+                                        <div className="mt-2 flex justify-end">
+                                          <button
+                                            className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
+                                            disabled={savingEditor || !inlineEditor.rcOverrideReason.trim()}
+                                            onClick={() => onSaveOverride('rc')}
+                                          >
+                                            {savingEditor ? 'Saving...' : `Save RC Override (${statusLabel(inlineEditor.rcOverrideStatus)})`}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {showOpsOverride && (
+                                      <div className="rounded border border-amber-200 bg-white p-3">
+                                        <div className="text-xs font-semibold text-slate-600">OPS override AI</div>
+                                        <select
+                                          value={inlineEditor.opsOverrideStatus}
+                                          onChange={event => onInlineOverrideStatusChange('ops', event.target.value as 'green' | 'yellow' | 'red')}
+                                          className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                        >
+                                          <option value="green">Good</option>
+                                          <option value="yellow">Pending</option>
+                                          <option value="red">Missing</option>
+                                        </select>
+                                        <textarea
+                                          value={inlineEditor.opsOverrideReason}
+                                          onChange={event => onInlineOverrideReasonChange('ops', event.target.value)}
+                                          rows={3}
+                                          placeholder="Explain the OPS override"
+                                          className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                        />
+                                        <div className="mt-2 flex justify-end">
+                                          <button
+                                            className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
+                                            disabled={savingEditor || !inlineEditor.opsOverrideReason.trim()}
+                                            onClick={() => onSaveOverride('ops')}
+                                          >
+                                            {savingEditor ? 'Saving...' : `Save OPS Override (${statusLabel(inlineEditor.opsOverrideStatus)})`}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {canMarkManual && (
+                                      <div className="rounded border border-emerald-200 bg-white p-3">
+                                        <div className="text-xs font-semibold text-slate-600">Manual portal verification</div>
+                                        <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
+                                          <input
+                                            type="checkbox"
+                                            checked={inlineEditor.manualVerified}
+                                            onChange={event => onInlineManualVerifiedChange(event.target.checked)}
+                                          />
+                                          Mark portal verification as completed manually
+                                        </label>
+                                        <textarea
+                                          value={inlineEditor.manualRemark}
+                                          onChange={event => onInlineManualRemarkChange(event.target.value)}
+                                          rows={3}
+                                          placeholder="Add the manual verification remark or why manual review is recommended"
+                                          className="mt-2 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                                        />
+                                        <div className="mt-2 flex justify-end">
+                                          <button
+                                            className="rounded bg-emerald-700 px-3 py-2 text-sm text-white"
+                                            disabled={savingEditor}
+                                            onClick={onSaveManualVerification}
+                                          >
+                                            {savingEditor ? 'Saving...' : inlineEditor.manualVerified ? 'Save Manual Verification' : 'Recommend Manual Review'}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
                                   <div className="mt-3 flex justify-end gap-2">
                                     <button className="rounded border border-slate-300 px-3 py-2 text-sm" onClick={onCloseInlineEditor}>
                                       Close
-                                    </button>
-                                    <button
-                                      className="rounded bg-slate-900 px-3 py-2 text-sm text-white"
-                                      disabled={savingEditor || !inlineEditor.overrideReason.trim()}
-                                      onClick={onSaveOverride}
-                                    >
-                                      {savingEditor ? 'Saving...' : 'Save Override'}
                                     </button>
                                   </div>
                                 </div>

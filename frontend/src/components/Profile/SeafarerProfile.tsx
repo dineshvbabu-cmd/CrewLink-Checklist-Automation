@@ -170,7 +170,8 @@ export default function SeafarerProfile({ member, docs }: Props) {
                     <th>Issue Date</th>
                     <th>Expiry Date</th>
                     <th>Authority</th>
-                    <th>Verified</th>
+                    <th>Checklist</th>
+                    <th>Portal</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -186,8 +187,11 @@ export default function SeafarerProfile({ member, docs }: Props) {
                         <td className="text-xs">{item.issueDate || '-'}</td>
                         <td className="text-xs">{item.expiryDate}</td>
                         <td className="text-xs text-gray-500">DG Shipping</td>
-                        <td className="text-center">
-                          {item.verifiedOps ? <span className="tick-verified">OK</span> : <span className="text-gray-400 text-xs">Pending</span>}
+                        <td className="text-center text-xs">
+                          {item.checklistStatus === 'good' ? <span className="tick-verified">OK</span> : <span className="text-gray-400">Pending</span>}
+                        </td>
+                        <td className="text-center text-xs">
+                          {item.portalStatus === 'verified' ? <span className="tick-verified">OK</span> : <span className="text-gray-400">{item.portalStatus === 'manual_review' ? 'Manual' : 'Pending'}</span>}
                         </td>
                       </tr>
                     ))}

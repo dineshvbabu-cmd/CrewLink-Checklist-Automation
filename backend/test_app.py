@@ -39,17 +39,17 @@ def test_ai_check_returns_matrix_driven_summary():
 def test_batch_portal_verification_resolves_pending_documents():
     headers = auth_headers("ops", "CrewlinkOps!23")
     before = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert before["summary"]["pendingVerification"] == 2
-    assert before["summary"]["portalPending"] == 2
+    assert before["summary"]["pendingVerification"] == 4
+    assert before["summary"]["portalPending"] == 4
 
     batch = client.post("/api/crew/c003/verify-portal-batch", headers=headers)
     assert batch.status_code == 200
     assert batch.json()["manualCount"] == 1
-    assert batch.json()["failedCount"] == 1
+    assert batch.json()["failedCount"] == 3
 
     after = client.get("/api/crew/c003/documents", headers=headers).json()
-    assert after["summary"]["pendingVerification"] == 2
-    assert after["summary"]["portalPending"] == 2
+    assert after["summary"]["pendingVerification"] == 4
+    assert after["summary"]["portalPending"] == 4
 
     ai = client.post("/api/ai/check/c003", headers=headers).json()
     assert ai["overallStatus"] == "yellow"
@@ -136,9 +136,9 @@ def test_verify_portal_applies_automated_result(monkeypatch):
         for item in section["items"]
         if item["name"] == "Certificate of Competency (Chief Officer)"
     )
-    assert competency["verifiedOps"] is True
+    assert competency["portalVerified"] is True
     assert competency["aiStatus"] == "green"
-    assert "mocked official portal" in competency["remark"]
+    assert "mocked official portal" in competency["systemNote"]
 
 
 def test_remark_and_override_are_logged():
@@ -264,7 +264,7 @@ def test_crewlink_checklist_item_marks_ops_review_as_pending():
     assert "review by OPS" in item["remark"]
 
 
-def test_crewlink_checklist_item_skips_not_applicable_placeholder():
+def test_crewlink_checklist_item_treats_na_placeholder_as_missing():
     item = main._crewlink_item_from_checklist(
         5,
         "medical",
@@ -279,9 +279,9 @@ def test_crewlink_checklist_item_skips_not_applicable_placeholder():
         },
     )
 
-    assert item["required"] is False
-    assert item["missing"] is False
-    assert item["aiStatus"] == "grey"
+    assert item["required"] is True
+    assert item["missing"] is True
+    assert item["aiStatus"] == "red"
 
 
 def test_crewlink_checklist_item_marks_missing_mandatory_course_red():
@@ -345,4 +345,4 @@ def test_verify_portal_review_only_document_stays_good():
         if item["name"] == "Interview Sheet (FP01D)"
     )
     assert interview_sheet["aiStatus"] == "green"
-    assert "supported public verification portal" in interview_sheet["remark"]
+    assert "supported public verification portal" in interview_sheet["systemNote"]

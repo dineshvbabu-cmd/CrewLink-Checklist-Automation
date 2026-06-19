@@ -100,10 +100,27 @@ export const verifyPortal = (id: string, docName: string, docNo: string): Promis
   api.post(`/crew/${id}/verify-portal`, { docName, docNo }).then(response => response.data)
 export const verifyPortalBatch = (id: string): Promise<PortalBatchResult> =>
   api.post(`/crew/${id}/verify-portal-batch`).then(response => response.data)
-export const updateDocumentRemark = (crewId: string, srNo: number, remark: string, actor = 'RC Officer') =>
-  api.post(`/crew/${crewId}/documents/${srNo}/remark`, { remark, actor }).then(response => response.data)
-export const overrideDocumentStatus = (crewId: string, srNo: number, status: 'green' | 'yellow' | 'red', reason: string, actor = 'RC Officer') =>
-  api.post(`/crew/${crewId}/documents/${srNo}/override`, { status, reason, actor }).then(response => response.data)
+export const updateDocumentRemark = (
+  crewId: string,
+  srNo: number,
+  remark: string,
+  channel: 'rc' | 'ops',
+  actor = 'RC Officer',
+) => api.post(`/crew/${crewId}/documents/${srNo}/remark`, { remark, actor, channel }).then(response => response.data)
+export const overrideDocumentStatus = (
+  crewId: string,
+  srNo: number,
+  status: 'green' | 'yellow' | 'red',
+  reason: string,
+  channel: 'rc' | 'ops',
+  actor = 'RC Officer',
+) => api.post(`/crew/${crewId}/documents/${srNo}/override`, { status, reason, actor, channel }).then(response => response.data)
+export const manualVerifyDocument = (
+  crewId: string,
+  srNo: number,
+  verified: boolean,
+  remark: string,
+) => api.post(`/crew/${crewId}/documents/${srNo}/manual-verify`, { verified, remark }).then(response => response.data)
 export const uploadDocumentAttachment = (crewId: string, srNo: number, file: File) => {
   const formData = new FormData()
   formData.append('file', file)

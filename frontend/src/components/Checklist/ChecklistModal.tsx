@@ -19,6 +19,7 @@ import {
   getExportChecklistUrl,
   getIntegrationStatus,
   getLatestSelfServiceLink,
+  manualVerifyDocument,
   overrideDocumentStatus,
   runAICheck,
   sendSelfServiceLink,
@@ -85,9 +86,14 @@ export default function ChecklistModal({ member, onClose }: Props) {
   const [inlineEditor, setInlineEditor] = useState<{
     srNo: number
     name: string
-    remarkValue: string
-    overrideStatus: 'green' | 'yellow' | 'red'
-    overrideReason: string
+    rcRemark: string
+    opsRemark: string
+    rcOverrideStatus: 'green' | 'yellow' | 'red'
+    rcOverrideReason: string
+    opsOverrideStatus: 'green' | 'yellow' | 'red'
+    opsOverrideReason: string
+    manualVerified: boolean
+    manualRemark: string
   } | null>(null)
   const [confirmationEditor, setConfirmationEditor] = useState<{
     srNo: number
@@ -98,10 +104,12 @@ export default function ChecklistModal({ member, onClose }: Props) {
 
   const activeStatus = aiResult?.overallStatus ?? member.aiStatus
   const canEditRemark = !!user && ['rc', 'ops', 'admin'].includes(user.role)
-  const canOverride = !!user && ['ops', 'admin'].includes(user.role)
+  const canRcOverride = !!user && ['rc', 'admin'].includes(user.role)
+  const canOpsOverride = !!user && ['ops', 'admin'].includes(user.role)
   const canSendSelfService = !!user && ['rc', 'admin'].includes(user.role)
   const canUpload = !!user && ['rc', 'ops', 'admin'].includes(user.role)
   const canUpdateOps = !!user && ['ops', 'admin'].includes(user.role)
+  const canManualVerify = !!user && ['rc', 'ops', 'admin'].includes(user.role)
   const { autoPending, manualPending } = countPortalQueues(docs)
 
   const refreshSideData = async () => {
@@ -188,35 +196,62 @@ export default function ChecklistModal({ member, onClose }: Props) {
     }
   }
 
-  const handleSaveRemark = async () => {
+  const handleSaveRemark = async (channel: 'rc' | 'ops') => {
     if (!inlineEditor) {
       return
     }
     setSavingEditor(true)
     try {
-      await updateDocumentRemark(member.id, inlineEditor.srNo, inlineEditor.remarkValue, user?.fullName ?? 'RC Team')
+      const remarkValue = channel === 'rc' ? inlineEditor.rcRemark : inlineEditor.opsRemark
+      await updateDocumentRemark(member.id, inlineEditor.srNo, remarkValue, channel, user?.fullName ?? 'RC Team')
       await Promise.all([refreshCoreData(), refreshSideData()])
-      setInfoMessage('Remark saved and added to the audit trail.')
+      setInfoMessage(`${channel.toUpperCase()} remark saved and added to the audit trail.`)
     } finally {
       setSavingEditor(false)
     }
   }
 
-  const handleSaveOverride = async () => {
+  const handleSaveOverride = async (channel: 'rc' | 'ops') => {
     if (!inlineEditor) {
       return
     }
     setSavingEditor(true)
     try {
+      const overrideStatus = channel === 'rc' ? inlineEditor.rcOverrideStatus : inlineEditor.opsOverrideStatus
+      const overrideReason = channel === 'rc' ? inlineEditor.rcOverrideReason : inlineEditor.opsOverrideReason
       await overrideDocumentStatus(
         member.id,
         inlineEditor.srNo,
-        inlineEditor.overrideStatus,
-        inlineEditor.overrideReason,
+        overrideStatus,
+        overrideReason,
+        channel,
         user?.fullName ?? 'Ops Team',
       )
       await handleAICheck()
-      setInfoMessage('AI override recorded for learning feedback and audit.')
+      setInfoMessage(`${channel.toUpperCase()} AI override recorded for learning feedback and audit.`)
+    } finally {
+      setSavingEditor(false)
+    }
+  }
+
+  const handleManualVerification = async () => {
+    if (!inlineEditor) {
+      return
+    }
+    setSavingEditor(true)
+    try {
+      await manualVerifyDocument(
+        member.id,
+        inlineEditor.srNo,
+        inlineEditor.manualVerified,
+        inlineEditor.manualRemark,
+      )
+      await handleAICheck()
+      setInfoMessage(
+        inlineEditor.manualVerified
+          ? 'Manual verification recorded.'
+          : 'Manual review recommendation saved.',
+      )
     } finally {
       setSavingEditor(false)
     }
@@ -415,43 +450,74 @@ export default function ChecklistModal({ member, onClose }: Props) {
               {activeTab === 0 && docs && (
                 <PreDepartureTab
                   data={docs}
-                  approvedBy={activeStatus === 'green' ? 'S. Patil on 17-Jun-2026 10:30' : undefined}
+                  approvedBy={undefined}
                   verifyingDoc={verifyingDoc}
                   uploadingSrNo={uploadingSrNo}
                   savingEditor={savingEditor}
                   verificationResults={verificationResults}
                   onVerifyDocument={handleVerifyDocument}
                   inlineEditor={inlineEditor}
-                  onOpenInlineEditor={({ srNo, name, currentRemark, currentStatus }) => {
+                  onOpenInlineEditor={({ item }) => {
                     setConfirmationEditor(null)
                     setInlineEditor(current =>
-                      current?.srNo === srNo
+                      current?.srNo === item.srNo
                         ? null
                         : {
-                            srNo,
-                            name,
-                            remarkValue: currentRemark,
-                            overrideStatus: currentStatus,
-                            overrideReason: '',
+                            srNo: item.srNo,
+                            name: item.name,
+                            rcRemark: item.rcRemark || '',
+                            opsRemark: item.opsRemark || '',
+                            rcOverrideStatus: (item.rcOverrideStatus || item.aiStatus) as 'green' | 'yellow' | 'red',
+                            rcOverrideReason: item.rcOverrideReason || '',
+                            opsOverrideStatus: (item.opsOverrideStatus || item.aiStatus) as 'green' | 'yellow' | 'red',
+                            opsOverrideReason: item.opsOverrideReason || '',
+                            manualVerified: item.portalStatus === 'verified',
+                            manualRemark: item.manualVerificationRemark || '',
                           },
                     )
                   }}
                   onCloseInlineEditor={() => setInlineEditor(null)}
-                  onInlineRemarkChange={value =>
-                    setInlineEditor(current => (current ? { ...current, remarkValue: value } : current))
+                  onInlineRemarkChange={(channel, value) =>
+                    setInlineEditor(current =>
+                      current ? { ...current, [channel === 'rc' ? 'rcRemark' : 'opsRemark']: value } : current,
+                    )
                   }
-                  onInlineOverrideStatusChange={status =>
-                    setInlineEditor(current => (current ? { ...current, overrideStatus: status } : current))
+                  onInlineOverrideStatusChange={(channel, status) =>
+                    setInlineEditor(current =>
+                      current
+                        ? {
+                            ...current,
+                            [channel === 'rc' ? 'rcOverrideStatus' : 'opsOverrideStatus']: status,
+                          }
+                        : current,
+                    )
                   }
-                  onInlineOverrideReasonChange={value =>
-                    setInlineEditor(current => (current ? { ...current, overrideReason: value } : current))
+                  onInlineOverrideReasonChange={(channel, value) =>
+                    setInlineEditor(current =>
+                      current
+                        ? {
+                            ...current,
+                            [channel === 'rc' ? 'rcOverrideReason' : 'opsOverrideReason']: value,
+                          }
+                        : current,
+                    )
                   }
-                  onSaveRemark={() => void handleSaveRemark()}
-                  onSaveOverride={() => void handleSaveOverride()}
+                  onInlineManualVerifiedChange={value =>
+                    setInlineEditor(current => (current ? { ...current, manualVerified: value } : current))
+                  }
+                  onInlineManualRemarkChange={value =>
+                    setInlineEditor(current => (current ? { ...current, manualRemark: value } : current))
+                  }
+                  onSaveRemark={channel => void handleSaveRemark(channel)}
+                  onSaveOverride={channel => void handleSaveOverride(channel)}
+                  onSaveManualVerification={() => void handleManualVerification()}
                   onUploadAttachment={(srNo, file) => void handleUploadAttachment(srNo, file)}
                   canEditRemark={canEditRemark}
-                  canOverride={canOverride}
+                  canRcOverride={canRcOverride}
+                  canOpsOverride={canOpsOverride}
                   canUpload={canUpload}
+                  canManualVerify={canManualVerify}
+                  userRole={user?.role}
                 />
               )}
 
