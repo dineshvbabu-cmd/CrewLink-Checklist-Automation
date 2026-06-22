@@ -186,6 +186,8 @@ def test_documents_payload_exposes_distinct_checklist_and_portal_statuses():
 
     assert competency["checklistStatus"] == "good"
     assert competency["portalStatus"] == "pending"
+    assert "portal automation" in competency["portalReason"].lower()
+    assert "matrix matched" in competency["checklistReason"].lower()
     assert interview_sheet["checklistStatus"] == "good"
     assert interview_sheet["portalStatus"] == "not_applicable"
     assert interview_sheet["systemNote"] == ""
@@ -476,6 +478,28 @@ def test_hydrate_document_item_clears_stale_pending_flag_when_evidence_is_valid(
     assert item["hasEvidence"] is True
     assert item["checklistAttention"] is False
     assert item["checklistStatus"] == "good"
+    assert "matrix matched" in item["checklistReason"].lower()
+
+
+def test_crewlink_build_crew_member_ignores_duplicate_reliever_name():
+    crew = main._crewlink_build_crew_member(
+        {
+            "crewId": 123,
+            "rank": "CO",
+            "firstName": "Anil",
+            "middleName": "Kumar",
+            "lastName": "Perla",
+            "relieverRank": "CO",
+            "relieverName": "Anil Kumar Perla",
+            "travelDate": "2026-05-20T00:00:00",
+            "signOnDate": "2026-05-21T00:00:00",
+        },
+        {"status": "planned", "dob": "1994-01-04T00:00:00", "rankRegister": {"code": "CO"}},
+    )
+
+    assert crew["name"] == "Anil Kumar Perla"
+    assert crew["relieverName"] == ""
+    assert crew["relieverRank"] == ""
 
 
 def test_crewlink_checklist_item_marks_missing_mandatory_course_red():

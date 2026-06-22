@@ -72,6 +72,9 @@ export interface DocumentItem {
   portalStatus?: PortalStatus
   hasEvidence?: boolean
   checklistAttention?: boolean
+  checklistReason?: string
+  portalReason?: string
+  statusReason?: string
   systemNote?: string
   rcRemark?: string
   opsRemark?: string

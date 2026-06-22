@@ -9,35 +9,35 @@ const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
   red: 'Missing',
 }
 
-function checklistPresentation(status?: ChecklistStatus) {
+function checklistPresentation(status?: ChecklistStatus, detail?: string) {
   switch (status) {
     case 'good':
-      return { color: '#27ae60', label: 'Complete', detail: 'Matrix matched and checklist cleared' }
+      return { color: '#27ae60', label: 'Complete', detail: detail || 'Matrix matched and checklist cleared' }
     case 'pending':
-      return { color: '#f39c12', label: 'Pending', detail: 'Checklist review still needed' }
+      return { color: '#f39c12', label: 'Pending', detail: detail || 'Checklist review still needed' }
     case 'missing':
-      return { color: '#e74c3c', label: 'Missing', detail: 'Required by matrix but not cleared' }
+      return { color: '#e74c3c', label: 'Missing', detail: detail || 'Required by matrix but not cleared' }
     default:
-      return { color: '#64748b', label: 'N/A', detail: 'Not required for this crew' }
+      return { color: '#64748b', label: 'N/A', detail: detail || 'Not required for this crew' }
   }
 }
 
-function portalPresentation(status: PortalStatus | undefined, result?: PortalVerificationResult) {
+function portalPresentation(status: PortalStatus | undefined, result?: PortalVerificationResult, detail?: string) {
   if (result?.verified) {
     return { color: '#27ae60', label: 'Verified', detail: result.message }
   }
 
   switch (status) {
     case 'verified':
-      return { color: '#27ae60', label: 'Verified', detail: 'Portal verification completed' }
+      return { color: '#27ae60', label: 'Verified', detail: detail || 'Portal verification completed' }
     case 'pending':
-      return { color: '#e67e22', label: 'Pending auto check', detail: 'Ready for portal automation' }
+      return { color: '#e67e22', label: 'Pending auto check', detail: detail || 'Ready for portal automation' }
     case 'manual_review':
-      return { color: '#f39c12', label: 'Pending manual review', detail: 'External portal review required' }
+      return { color: '#f39c12', label: 'Pending manual review', detail: detail || 'External portal review required' }
     case 'blocked':
-      return { color: '#c2410c', label: 'Blocked', detail: 'Finish checklist review first' }
+      return { color: '#c2410c', label: 'Blocked', detail: detail || 'Finish checklist review first' }
     default:
-      return { color: '#64748b', label: 'Not applicable', detail: 'No supported public portal' }
+      return { color: '#64748b', label: 'Not applicable', detail: detail || 'No supported public portal' }
   }
 }
 
@@ -185,8 +185,8 @@ export default function PreDepartureTab({
                   const displayStatus = item.overrideStatus || item.aiStatus
                   const showRcOverride = canRcOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.rcOverrideStatus)
                   const showOpsOverride = canOpsOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.opsOverrideStatus)
-                  const checklistView = checklistPresentation(item.checklistStatus)
-                  const portalView = portalPresentation(item.portalStatus, verifyResult)
+                  const checklistView = checklistPresentation(item.checklistStatus, item.checklistReason)
+                  const portalView = portalPresentation(item.portalStatus, verifyResult, item.portalReason)
                   const portalRoute = item.portalRoute
                   const routeNeedsManualReview = portalRoute?.eligible && !portalRoute?.autoCapable
                   const routeIsUnsupported = portalRoute && portalRoute.eligible === false
@@ -392,8 +392,16 @@ export default function PreDepartureTab({
                             {!item.rcRemark && !item.opsRemark && (
                               <span className="text-xs text-gray-400 italic">No RC / OPS remark</span>
                             )}
-                            {item.systemNote ? (
+                            {item.systemNote && item.systemNote !== item.statusReason ? (
                               <span className="text-[10px] text-slate-500">System: {item.systemNote}</span>
+                            ) : null}
+                            {item.statusReason && item.aiStatus === 'yellow' ? (
+                              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                                  Pending because
+                                </div>
+                                <div className="text-xs text-slate-800">{item.statusReason}</div>
+                              </div>
                             ) : null}
                             {item.overrideStatus && item.overrideReason && (
                               <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1">

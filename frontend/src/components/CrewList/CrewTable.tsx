@@ -191,7 +191,7 @@ export default function CrewTable({
                     <span style={{ width: 13 }} />
                   )}
                   <span className="text-gray-600 text-xs">
-                    {member.relieverRank} : {member.relieverName}
+                    {member.relieverName ? `${member.relieverRank} : ${member.relieverName}` : '-'}
                   </span>
                 </div>
               </td>
