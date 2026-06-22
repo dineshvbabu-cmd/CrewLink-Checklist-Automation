@@ -1266,12 +1266,10 @@ def _refresh_checklist_state(item: Dict[str, Any]) -> None:
     if imported_checklist:
         item["checklistAttention"] = bool(
             _crewlink_requires_attention(_effective_remark_for_item(item))
-            or (item.get("verifiedRC", False) and not item.get("verifiedOps", False))
-            or (not item.get("verifiedRC", False) and not item.get("verifiedOps", False))
         )
         return
 
-    item["checklistAttention"] = bool(item.get("checklistAttention", False) or not item.get("verifiedRC", False))
+    item["checklistAttention"] = bool(item.get("checklistAttention", False))
 
 
 def _crewlink_item(
@@ -1569,11 +1567,7 @@ def _crewlink_item_from_checklist(
         required
         and not missing
         and not expired
-        and (
-            _crewlink_requires_attention(human_remark)
-            or (verified_rc and not verified_ops)
-            or (not verified_rc and not verified_ops)
-        )
+        and _crewlink_requires_attention(human_remark)
     )
 
     if missing or expired:
@@ -2128,7 +2122,7 @@ def _derive_checklist_status(item: Dict[str, Any]) -> ChecklistStatus:
         return "missing"
     if item.get("missing") or item.get("expired", False):
         return "missing"
-    if item.get("checklistAttention") or not item.get("verifiedRC", False):
+    if item.get("checklistAttention"):
         return "pending"
     return "good"
 

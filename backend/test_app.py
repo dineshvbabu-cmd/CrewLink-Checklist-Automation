@@ -348,6 +348,32 @@ def test_crewlink_license_attachment_evidence_recovers_imported_item():
     assert item["portalEvidenceSource"] == "crewlink_attachment"
 
 
+def test_crewlink_attached_valid_document_is_checklist_good_without_rc_ops_flags():
+    item = main._crewlink_item_from_checklist(
+        8,
+        "travel",
+        {
+            "docname": "Passport",
+            "docNo": "Z6908119",
+            "type": "Travel",
+            "issueDate": "2022-10-18T00:00:00",
+            "expiryDate": "2032-10-17T00:00:00",
+            "filePath": "https://example.com/passport.pdf",
+            "remark1": "",
+            "firstVerification": None,
+            "secondVerification": None,
+        },
+    )
+
+    main._hydrate_document_item("c002", item, [item["name"]])
+
+    assert item["hasEvidence"] is True
+    assert item["missing"] is False
+    assert item["expired"] is False
+    assert item["checklistAttention"] is False
+    assert item["checklistStatus"] == "good"
+
+
 def test_hydrate_document_item_ignores_persisted_1900_expiry_placeholder():
     item = {
         "srNo": 8,
@@ -378,6 +404,41 @@ def test_hydrate_document_item_ignores_persisted_1900_expiry_placeholder():
     main._hydrate_document_item("c002", item, [item["name"]])
 
     assert item["expiryDate"] == "NA"
+    assert item["expired"] is False
+    assert item["missing"] is False
+    assert item["checklistStatus"] == "good"
+
+
+def test_hydrate_document_item_keeps_attached_na_expiry_document_good():
+    item = {
+        "srNo": 9,
+        "name": "Yellow Fever Certificate",
+        "docNo": "YF-2026-01",
+        "type": "Medical",
+        "issueDate": "08-Nov-2013",
+        "expiryDate": "NA",
+        "attachmentUrl": "https://example.com/yellow-fever.pdf",
+        "verifiedRC": False,
+        "verifiedOps": False,
+        "required": True,
+        "missing": False,
+        "checklistAttention": False,
+        "portalVerified": False,
+        "portalEvidenceUrl": "",
+        "portalEvidenceSource": "",
+        "rcRemark": "",
+        "opsRemark": "",
+        "rcOverrideStatus": "",
+        "rcOverrideReason": "",
+        "opsOverrideStatus": "",
+        "opsOverrideReason": "",
+        "remark": "",
+        "documentSource": "crewlink_imported",
+    }
+
+    main._hydrate_document_item("c002", item, [item["name"]])
+
+    assert item["hasEvidence"] is True
     assert item["expired"] is False
     assert item["missing"] is False
     assert item["checklistStatus"] == "good"
