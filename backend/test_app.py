@@ -188,6 +188,7 @@ def test_documents_payload_exposes_distinct_checklist_and_portal_statuses():
     assert competency["portalStatus"] == "pending"
     assert interview_sheet["checklistStatus"] == "good"
     assert interview_sheet["portalStatus"] == "not_applicable"
+    assert interview_sheet["systemNote"] == ""
 
 
 def test_self_service_submission_updates_confirmation():
@@ -538,4 +539,4 @@ def test_verify_portal_review_only_document_stays_good():
         if item["name"] == "Interview Sheet (FP01D)"
     )
     assert interview_sheet["aiStatus"] == "green"
-    assert "supported public verification portal" in interview_sheet["systemNote"]
+    assert interview_sheet["systemNote"] == ""

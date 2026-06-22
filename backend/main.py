@@ -2493,8 +2493,6 @@ def _recalculate_crew(crew_id: str) -> None:
             item["systemNote"] = f"Portal verification is still pending through {route['portalLabel']}."
         elif item["required"] and portal_status == "manual_review":
             item["systemNote"] = f"Manual portal review is still required through {route['portalLabel']}."
-        elif route.get("verificationMode") == "review" and existing_system_note:
-            item["systemNote"] = existing_system_note
         else:
             item["systemNote"] = ""
         _apply_effective_human_fields(item)
