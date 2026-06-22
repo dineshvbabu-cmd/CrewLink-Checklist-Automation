@@ -1169,13 +1169,28 @@ def _crewlink_requires_attention(text: str) -> bool:
 
 def _looks_like_system_status_remark(text: str) -> bool:
     lowered = (text or "").strip().lower()
-    return lowered in {
+    if not lowered:
+        return False
+    if lowered in {
         "pending portal verification",
         "portal check pending",
         "awaiting ops verification",
         "checklist verification is pending.",
         "document uploaded and matched to the checklist. no supported public portal is configured for this document type, so it remains under ai + human checklist review.",
-    }
+    }:
+        return True
+    return any(
+        marker in lowered
+        for marker in (
+            "portal verification pending",
+            "portal check pending",
+            "portal response",
+            "portal down",
+            "mmd portal",
+            "dg shipping portal",
+            "mocked official portal",
+        )
+    )
 
 
 def _crewlink_effective_date(value: Any) -> str:
@@ -1187,7 +1202,9 @@ def _crewlink_effective_date(value: Any) -> str:
 
 def _clean_human_remark(text: str) -> str:
     cleaned = (text or "").strip()
-    return "" if cleaned.lower() in {"na", "n/a"} else cleaned
+    if cleaned.lower() in {"na", "n/a"} or _looks_like_system_status_remark(cleaned):
+        return ""
+    return cleaned
 
 
 def _split_role_remarks(remark: str) -> tuple[str, str]:
@@ -1216,7 +1233,9 @@ def _effective_override_for_item(item: Dict[str, Any]) -> tuple[str, str]:
 
 
 def _effective_remark_for_item(item: Dict[str, Any]) -> str:
-    return str(item.get("opsRemark") or item.get("rcRemark") or item.get("remark") or "")
+    return _clean_human_remark(
+        str(item.get("opsRemark") or item.get("rcRemark") or item.get("remark") or "")
+    )
 
 
 def _apply_effective_human_fields(item: Dict[str, Any]) -> None:
@@ -1235,10 +1254,6 @@ def _refresh_checklist_state(item: Dict[str, Any]) -> None:
     required = bool(item.get("required", True))
     expired = required and _crewlink_is_expired(item.get("expiryDate"))
     item["expired"] = expired
-    imported_checklist = bool(
-        item.get("documentSource") == "crewlink_imported" or item.get("crewlinkChecklistId")
-    )
-
     override_status, _override_reason = _effective_override_for_item(item)
     if override_status == "green":
         item["missing"] = False
@@ -1263,13 +1278,9 @@ def _refresh_checklist_state(item: Dict[str, Any]) -> None:
         item["checklistAttention"] = False
         return
 
-    if imported_checklist:
-        item["checklistAttention"] = bool(
-            _crewlink_requires_attention(_effective_remark_for_item(item))
-        )
-        return
-
-    item["checklistAttention"] = bool(item.get("checklistAttention", False))
+    item["checklistAttention"] = bool(
+        _crewlink_requires_attention(_effective_remark_for_item(item))
+    )
 
 
 def _crewlink_item(

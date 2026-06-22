@@ -444,6 +444,39 @@ def test_hydrate_document_item_keeps_attached_na_expiry_document_good():
     assert item["checklistStatus"] == "good"
 
 
+def test_hydrate_document_item_clears_stale_pending_flag_when_evidence_is_valid():
+    item = {
+        "srNo": 10,
+        "name": "CDC",
+        "docNo": "MUM219894",
+        "type": "Travel",
+        "issueDate": "14-Aug-2023",
+        "expiryDate": "13-Aug-2033",
+        "attachmentUrl": "https://example.com/cdc.pdf",
+        "verifiedRC": False,
+        "verifiedOps": False,
+        "required": True,
+        "missing": False,
+        "checklistAttention": True,
+        "portalVerified": False,
+        "portalEvidenceUrl": "",
+        "portalEvidenceSource": "",
+        "rcRemark": "",
+        "opsRemark": "",
+        "rcOverrideStatus": "",
+        "rcOverrideReason": "",
+        "opsOverrideStatus": "",
+        "opsOverrideReason": "",
+        "remark": "",
+    }
+
+    main._hydrate_document_item("c002", item, [item["name"]])
+
+    assert item["hasEvidence"] is True
+    assert item["checklistAttention"] is False
+    assert item["checklistStatus"] == "good"
+
+
 def test_crewlink_checklist_item_marks_missing_mandatory_course_red():
     item = main._crewlink_item_from_checklist(
         12,
