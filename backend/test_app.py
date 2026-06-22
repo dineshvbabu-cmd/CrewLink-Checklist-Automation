@@ -185,10 +185,14 @@ def test_documents_payload_exposes_distinct_checklist_and_portal_statuses():
     )
 
     assert competency["checklistStatus"] == "good"
+    assert competency["attachmentStatus"] == "available"
+    assert competency["matrixStatus"] == "required"
     assert competency["portalStatus"] == "pending"
     assert "portal automation" in competency["portalReason"].lower()
-    assert "matrix matched" in competency["checklistReason"].lower()
+    assert "attachment evidence is available" in competency["checklistReason"].lower()
     assert interview_sheet["checklistStatus"] == "good"
+    assert interview_sheet["attachmentStatus"] == "available"
+    assert interview_sheet["matrixStatus"] == "required"
     assert interview_sheet["portalStatus"] == "not_applicable"
     assert interview_sheet["systemNote"] == ""
 
@@ -242,7 +246,7 @@ def test_export_pdf_returns_pdf_document():
     assert len(response.content) > 500
 
 
-def test_crewlink_checklist_item_marks_ops_review_as_pending():
+def test_crewlink_checklist_item_keeps_ops_review_remark_separate_from_ai_status():
     item = main._crewlink_item_from_checklist(
         1,
         "flag",
@@ -261,7 +265,10 @@ def test_crewlink_checklist_item_marks_ops_review_as_pending():
 
     assert item["required"] is True
     assert item["missing"] is False
-    assert item["aiStatus"] == "yellow"
+    assert item["attachmentStatus"] == "available"
+    assert item["matrixStatus"] == "required"
+    assert item["checklistStatus"] == "good"
+    assert item["aiStatus"] == "green"
     assert item["verifiedOps"] is False
     assert item["portalVerified"] is False
     assert "review by OPS" in item["remark"]
@@ -478,7 +485,9 @@ def test_hydrate_document_item_clears_stale_pending_flag_when_evidence_is_valid(
     assert item["hasEvidence"] is True
     assert item["checklistAttention"] is False
     assert item["checklistStatus"] == "good"
-    assert "matrix matched" in item["checklistReason"].lower()
+    assert item["attachmentStatus"] == "available"
+    assert item["matrixStatus"] == "required"
+    assert "attachment evidence is available" in item["checklistReason"].lower()
 
 
 def test_crewlink_build_crew_member_ignores_duplicate_reliever_name():

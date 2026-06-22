@@ -1256,9 +1256,36 @@ def _portal_inputs_summary(route: Dict[str, Any]) -> str:
     return f"{', '.join(inputs[:-1])}, and {inputs[-1]}"
 
 
+def _attachment_status_for_item(item: Dict[str, Any]) -> str:
+    if item.get("expired", False):
+        return "expired"
+    if item.get("hasEvidence"):
+        return "available"
+    return "missing"
+
+
+def _attachment_reason_for_item(item: Dict[str, Any]) -> str:
+    status = _attachment_status_for_item(item)
+    if status == "expired":
+        return "Attachment found, but the extracted expiry date is already past."
+    if status == "available":
+        return "Attachment and document details are available and valid."
+    return "No usable attachment or document details were found."
+
+
+def _matrix_status_for_item(item: Dict[str, Any]) -> str:
+    return "required" if item.get("required", True) else "not_required"
+
+
+def _matrix_reason_for_item(item: Dict[str, Any]) -> str:
+    if item.get("required", True):
+        return "Required by the vessel matrix for this crew member."
+    return "Not required by the vessel matrix for this crew member."
+
+
 def _checklist_reason_for_item(item: Dict[str, Any]) -> str:
     if not item.get("required", True):
-        return "Not required by the vessel matrix for this crew member."
+        return "Attachment is available, but this document is not required by the vessel matrix."
 
     override_status, override_reason = _effective_override_for_item(item)
     if override_status == "green":
@@ -1271,18 +1298,15 @@ def _checklist_reason_for_item(item: Dict[str, Any]) -> str:
     if item.get("missing"):
         return "Required by matrix, but no usable attachment or document details were found."
     if item.get("expired", False):
-        return "Attachment was found, but the extracted expiry date is already past."
-    if item.get("checklistAttention"):
-        remark = _effective_remark_for_item(item)
-        return f"Checklist follow-up required: {remark}" if remark else "Checklist follow-up is still required."
+        return "Required by matrix, but the attached document is expired."
     if item.get("hasEvidence"):
-        return "Matrix matched and attachment evidence is available."
+        return "Required by matrix and attachment evidence is available."
     return "Checklist evidence is incomplete."
 
 
 def _portal_reason_for_item(item: Dict[str, Any], route: Dict[str, Any]) -> str:
     if not item.get("required", True):
-        return "Portal verification is not required for a non-mandatory checklist item."
+        return "Portal verification is not required because this document is not required by matrix."
     if item.get("portalEvidenceUrl"):
         return "Crewlink already contains portal verification evidence for this document."
     if item.get("portalVerified", False):
@@ -1306,12 +1330,13 @@ def _portal_reason_for_item(item: Dict[str, Any], route: Dict[str, Any]) -> str:
 
 
 def _status_reason_for_item(item: Dict[str, Any]) -> str:
+    override_status, override_reason = _effective_override_for_item(item)
+    if override_status and override_reason:
+        return override_reason
     checklist_status = item.get("checklistStatus")
     portal_status = item.get("portalStatus")
     if checklist_status == "missing":
         return item.get("checklistReason") or "Required matrix evidence is missing."
-    if checklist_status == "pending":
-        return item.get("checklistReason") or "Checklist review is still pending."
     if portal_status in {"pending", "manual_review", "blocked"}:
         return item.get("portalReason") or "Portal verification is still pending."
     return item.get("checklistReason") or ""
@@ -1355,9 +1380,7 @@ def _refresh_checklist_state(item: Dict[str, Any]) -> None:
         item["checklistAttention"] = False
         return
 
-    item["checklistAttention"] = bool(
-        _crewlink_requires_attention(_effective_remark_for_item(item))
-    )
+    item["checklistAttention"] = False
 
 
 def _crewlink_item(
@@ -1400,6 +1423,10 @@ def _crewlink_item(
         "checklistAttention": not verified and not missing,
         "checklistStatus": checklist_status,
         "portalStatus": "not_applicable",
+        "attachmentStatus": "missing" if missing else "available",
+        "attachmentReason": "",
+        "matrixStatus": "required",
+        "matrixReason": "",
         "checklistReason": "",
         "portalReason": "",
         "statusReason": "",
@@ -1654,29 +1681,20 @@ def _crewlink_item_from_checklist(
 
     missing = required and not has_evidence
     expired = required and _crewlink_is_expired(raw_item.get("expiryDate"))
-    pending = (
-        required
-        and not missing
-        and not expired
-        and _crewlink_requires_attention(human_remark)
-    )
+    pending = False
 
-    if missing or expired:
+    if required and (missing or expired):
         ai_status: AIStatus = "red"
-    elif pending:
-        ai_status = "yellow"
     elif has_evidence:
         ai_status = "green"
     else:
         ai_status = "grey"
 
     system_note = ""
-    if missing:
+    if required and missing:
         system_note = "Required by Crewlink checklist but the document is not attached."
-    elif expired:
+    elif required and expired:
         system_note = "Document appears expired in Crewlink."
-    elif pending:
-        system_note = "Checklist verification is pending."
 
     type_label = str(raw_item.get("type") or "").strip() or _doc_type_from_name(name)
     item = {
@@ -1720,13 +1738,15 @@ def _crewlink_item_from_checklist(
             if not required
             else "missing"
             if missing or expired
-            else "pending"
-            if pending
             else "good"
             if has_evidence
-            else "pending"
+            else "missing"
         ),
         "portalStatus": "not_applicable",
+        "attachmentStatus": "expired" if expired else ("available" if has_evidence else "missing"),
+        "attachmentReason": "",
+        "matrixStatus": "required" if required else "not_required",
+        "matrixReason": "",
         "checklistReason": system_note or "",
         "portalReason": "",
         "statusReason": system_note or "",
@@ -2222,8 +2242,6 @@ def _derive_checklist_status(item: Dict[str, Any]) -> ChecklistStatus:
         return "missing"
     if item.get("missing") or item.get("expired", False):
         return "missing"
-    if item.get("checklistAttention"):
-        return "pending"
     return "good"
 
 
@@ -2509,6 +2527,10 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
     item.setdefault("portalEvidenceSource", "")
     item.setdefault("manualVerificationRemark", "")
     item.setdefault("manualVerificationBy", "")
+    item.setdefault("attachmentStatus", "")
+    item.setdefault("attachmentReason", "")
+    item.setdefault("matrixStatus", "")
+    item.setdefault("matrixReason", "")
     item.setdefault("checklistReason", "")
     item.setdefault("portalReason", "")
     item.setdefault("statusReason", "")
@@ -2527,6 +2549,10 @@ def _hydrate_document_item(crew_id: str, item: Dict[str, Any], required_docs: Li
         crewlink_imported=bool(_find_crew_member(crew_id).get("crewlinkCrewId")),
         checklist_status=item["checklistStatus"],
     )
+    item["attachmentStatus"] = _attachment_status_for_item(item)
+    item["attachmentReason"] = _attachment_reason_for_item(item)
+    item["matrixStatus"] = _matrix_status_for_item(item)
+    item["matrixReason"] = _matrix_reason_for_item(item)
     item["checklistReason"] = _checklist_reason_for_item(item)
     item["portalReason"] = _portal_reason_for_item(item, route)
     item["statusReason"] = _status_reason_for_item(item)

@@ -1,6 +1,6 @@
 import { Fragment } from 'react'
 import { Paperclip } from 'lucide-react'
-import type { DocumentsData, DocumentItem, PortalVerificationResult, PortalStatus, ChecklistStatus } from '../../types'
+import type { DocumentsData, DocumentItem, PortalVerificationResult, PortalStatus, AttachmentStatus, MatrixStatus } from '../../types'
 import TrafficLight from '../Common/TrafficLight'
 
 const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
@@ -9,16 +9,23 @@ const STATUS_LABELS: Record<'green' | 'yellow' | 'red', string> = {
   red: 'Missing',
 }
 
-function checklistPresentation(status?: ChecklistStatus, detail?: string) {
+function attachmentPresentation(status?: AttachmentStatus, detail?: string) {
   switch (status) {
-    case 'good':
-      return { color: '#27ae60', label: 'Complete', detail: detail || 'Matrix matched and checklist cleared' }
-    case 'pending':
-      return { color: '#f39c12', label: 'Pending', detail: detail || 'Checklist review still needed' }
-    case 'missing':
-      return { color: '#e74c3c', label: 'Missing', detail: detail || 'Required by matrix but not cleared' }
+    case 'available':
+      return { color: '#27ae60', label: 'Complete', detail: detail || 'Attachment and dates are valid' }
+    case 'expired':
+      return { color: '#e74c3c', label: 'Expired', detail: detail || 'Attached document has expired' }
     default:
-      return { color: '#64748b', label: 'N/A', detail: detail || 'Not required for this crew' }
+      return { color: '#e74c3c', label: 'Missing', detail: detail || 'No usable attachment evidence found' }
+  }
+}
+
+function matrixPresentation(status?: MatrixStatus, detail?: string) {
+  switch (status) {
+    case 'required':
+      return { color: '#2563eb', label: 'Required', detail: detail || 'Required by vessel matrix' }
+    default:
+      return { color: '#64748b', label: 'Not required', detail: detail || 'Not required by vessel matrix' }
   }
 }
 
@@ -137,13 +144,19 @@ export default function PreDepartureTab({
         <div className="rounded border border-blue-100 bg-white px-3 py-2">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Checklist Check</div>
           <div className="mt-1 text-xs text-slate-700">
-            Matrix requirement + uploaded evidence + RC / Ops checklist decision.
+            Step 1: confirm attachment exists and expiry is valid.
           </div>
         </div>
-        <div className="rounded border border-amber-100 bg-white px-3 py-2">
+        <div className="rounded border border-indigo-100 bg-white px-3 py-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Matrix Requirement</div>
+          <div className="mt-1 text-xs text-slate-700">
+            Step 2: confirm whether the document is actually required for this rank and vessel.
+          </div>
+        </div>
+        <div className="rounded border border-amber-100 bg-white px-3 py-2 md:col-span-2">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Portal Verification</div>
           <div className="mt-1 text-xs text-slate-700">
-            Separate external authority verification. This can stay pending even after the checklist is complete.
+            Step 3: confirm portal verification or existing verification attachment in licenses / courses / documents.
           </div>
         </div>
       </div>
@@ -159,7 +172,8 @@ export default function PreDepartureTab({
               <th style={{ width: 95 }}>Issue Date</th>
               <th style={{ width: 95 }}>Expiry Date</th>
               <th style={{ width: 80 }}>Att.</th>
-              <th style={{ width: 150 }}>Checklist Check</th>
+              <th style={{ width: 150 }}>Attachment & Validity</th>
+              <th style={{ width: 150 }}>Matrix Requirement</th>
               <th style={{ width: 170 }}>Portal Verification</th>
               <th style={{ width: 85 }}>Confidence</th>
               <th style={{ width: 70 }}>AI</th>
@@ -170,7 +184,7 @@ export default function PreDepartureTab({
             {data.sections.map(section => (
               <Fragment key={section.title}>
                 <tr className="section-header-row">
-                  <td colSpan={12}>{section.title}</td>
+                  <td colSpan={13}>{section.title}</td>
                 </tr>
                 {section.items.map(item => {
                   srCounter += 1
@@ -185,7 +199,8 @@ export default function PreDepartureTab({
                   const displayStatus = item.overrideStatus || item.aiStatus
                   const showRcOverride = canRcOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.rcOverrideStatus)
                   const showOpsOverride = canOpsOverride && (item.aiStatus === 'red' || item.aiStatus === 'yellow' || !!item.opsOverrideStatus)
-                  const checklistView = checklistPresentation(item.checklistStatus, item.checklistReason)
+                  const attachmentView = attachmentPresentation(item.attachmentStatus, item.attachmentReason)
+                  const matrixView = matrixPresentation(item.matrixStatus, item.matrixReason)
                   const portalView = portalPresentation(item.portalStatus, verifyResult, item.portalReason)
                   const portalRoute = item.portalRoute
                   const routeNeedsManualReview = portalRoute?.eligible && !portalRoute?.autoCapable
@@ -222,7 +237,7 @@ export default function PreDepartureTab({
                             )}
                             {!isMissing && canUpload && (
                               <label className="link-blue text-[10px] cursor-pointer">
-                                {uploadingSrNo === item.srNo ? 'Uploading...' : 'Upload'}
+                            {uploadingSrNo === item.srNo ? 'Uploading...' : 'Upload'}
                                 <input
                                   type="file"
                                   className="hidden"
@@ -241,11 +256,21 @@ export default function PreDepartureTab({
                         </td>
                         <td className="text-center">
                           <div>
-                            <div style={{ color: checklistView.color }} className="text-xs font-semibold">
-                              {checklistView.label}
+                            <div style={{ color: attachmentView.color }} className="text-xs font-semibold">
+                              {attachmentView.label}
                             </div>
                             <div className="text-[10px] text-gray-500 leading-tight" style={{ maxWidth: 140 }}>
-                              {checklistView.detail}
+                              {attachmentView.detail}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="text-center">
+                          <div>
+                            <div style={{ color: matrixView.color }} className="text-xs font-semibold">
+                              {matrixView.label}
+                            </div>
+                            <div className="text-[10px] text-gray-500 leading-tight" style={{ maxWidth: 140 }}>
+                              {matrixView.detail}
                             </div>
                           </div>
                         </td>

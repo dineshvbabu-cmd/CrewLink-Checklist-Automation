@@ -1,6 +1,8 @@
 export type AIStatus = 'green' | 'yellow' | 'red' | 'grey'
 export type ChecklistStatus = 'good' | 'pending' | 'missing' | 'not_applicable'
 export type PortalStatus = 'verified' | 'pending' | 'manual_review' | 'not_applicable' | 'blocked'
+export type AttachmentStatus = 'available' | 'missing' | 'expired'
+export type MatrixStatus = 'required' | 'not_required'
 
 export interface PortalRouteInfo {
   portal: string
@@ -72,6 +74,10 @@ export interface DocumentItem {
   portalStatus?: PortalStatus
   hasEvidence?: boolean
   checklistAttention?: boolean
+  attachmentStatus?: AttachmentStatus
+  attachmentReason?: string
+  matrixStatus?: MatrixStatus
+  matrixReason?: string
   checklistReason?: string
   portalReason?: string
   statusReason?: string
