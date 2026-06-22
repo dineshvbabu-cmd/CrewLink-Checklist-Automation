@@ -315,11 +315,12 @@ export default function ChecklistModal({ member, onClose }: Props) {
       <div
         style={{
           background: 'white',
-          borderRadius: 6,
-          boxShadow: '0 8px 40px rgba(0,0,0,0.25)',
-          width: '95vw',
-          maxWidth: 1280,
-          maxHeight: '92vh',
+          borderRadius: 0,
+          boxShadow: 'none',
+          width: '100vw',
+          maxWidth: '100vw',
+          height: '100vh',
+          maxHeight: '100vh',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -347,7 +348,7 @@ export default function ChecklistModal({ member, onClose }: Props) {
               </span>
             </div>
           </div>
-          <button onClick={onClose} className="text-blue-300 hover:text-white p-1">
+          <button onClick={onClose} className="text-blue-300 hover:text-white p-1" title="Close full-screen checklist">
             <X size={20} />
           </button>
         </div>

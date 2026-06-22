@@ -1,5 +1,5 @@
-import { Fragment } from 'react'
-import { Paperclip } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { ChevronDown, ChevronUp, Paperclip } from 'lucide-react'
 import type { DocumentsData, DocumentItem, PortalVerificationResult, PortalStatus, AttachmentStatus, MatrixStatus } from '../../types'
 import TrafficLight from '../Common/TrafficLight'
 
@@ -128,6 +128,28 @@ export default function PreDepartureTab({
   canManualVerify,
   userRole,
 }: Props) {
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    setCollapsedSections(current => {
+      const next = { ...current }
+      data.sections.forEach(section => {
+        if (!(section.title in next)) {
+          next[section.title] = false
+        }
+      })
+      return next
+    })
+  }, [data.sections])
+
+  const setAllSectionsCollapsed = (collapsed: boolean) => {
+    const next: Record<string, boolean> = {}
+    data.sections.forEach(section => {
+      next[section.title] = collapsed
+    })
+    setCollapsedSections(next)
+  }
+
   let srCounter = 0
 
   return (
@@ -161,6 +183,28 @@ export default function PreDepartureTab({
         </div>
       </div>
 
+      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Checklist sections
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded border border-slate-300 px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+            onClick={() => setAllSectionsCollapsed(false)}
+            type="button"
+          >
+            Expand all
+          </button>
+          <button
+            className="rounded border border-slate-300 px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+            onClick={() => setAllSectionsCollapsed(true)}
+            type="button"
+          >
+            Collapse all
+          </button>
+        </div>
+      </div>
+
       <div className="overflow-x-auto">
         <table className="crewlink-table">
           <thead>
@@ -184,9 +228,36 @@ export default function PreDepartureTab({
             {data.sections.map(section => (
               <Fragment key={section.title}>
                 <tr className="section-header-row">
-                  <td colSpan={13}>{section.title}</td>
+                  <td colSpan={13} className="!p-0">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between px-4 py-3 text-left"
+                      onClick={() =>
+                        setCollapsedSections(current => ({
+                          ...current,
+                          [section.title]: !current[section.title],
+                        }))
+                      }
+                    >
+                      <span className="flex items-center gap-3">
+                        <span>{section.title}</span>
+                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                          {section.items.length} items
+                        </span>
+                      </span>
+                      {collapsedSections[section.title] ? (
+                        <span className="flex items-center gap-1 text-xs text-slate-600">
+                          Expand <ChevronDown size={14} />
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-xs text-slate-600">
+                          Collapse <ChevronUp size={14} />
+                        </span>
+                      )}
+                    </button>
+                  </td>
                 </tr>
-                {section.items.map(item => {
+                {!collapsedSections[section.title] && section.items.map(item => {
                   srCounter += 1
                   const isMissing = item.missing
                   const verifyResult = verificationResults[item.name]
@@ -486,7 +557,7 @@ export default function PreDepartureTab({
                       </tr>
                       {isEditorOpen && inlineEditor && canShowCombinedEditor && (
                         <tr>
-                          <td colSpan={12} className="bg-slate-50 px-4 py-4">
+                          <td colSpan={13} className="bg-slate-50 px-4 py-4">
                             <div className="grid gap-4 lg:grid-cols-2">
                               {canEditRemark && (
                                 <div className="rounded border border-slate-200 bg-white p-4">
