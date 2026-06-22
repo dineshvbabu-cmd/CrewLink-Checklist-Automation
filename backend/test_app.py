@@ -356,6 +356,7 @@ def test_crewlink_license_attachment_evidence_recovers_imported_item():
     assert item["portalStatus"] == "verified"
     assert item["attachmentUrl"] == "https://example.com/flag-cdc.pdf"
     assert item["portalEvidenceSource"] == "crewlink_attachment"
+    assert item["systemNote"] == ""
 
 
 def test_crewlink_attached_valid_document_is_checklist_good_without_rc_ops_flags():

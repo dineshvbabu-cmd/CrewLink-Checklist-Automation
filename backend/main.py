@@ -2603,9 +2603,13 @@ def _recalculate_crew(crew_id: str) -> None:
         item["checklistReason"] = _checklist_reason_for_item(item)
         item["portalReason"] = _portal_reason_for_item(item, route)
         item["statusReason"] = _status_reason_for_item(item)
-        if portal_status == "verified" and existing_system_note:
+        if (
+            portal_status == "verified"
+            and existing_system_note
+            and item.get("portalEvidenceSource") in {"official_portal", "manual_review"}
+        ):
             item["systemNote"] = existing_system_note
-        elif checklist_status == "good" and portal_status == "not_applicable":
+        elif checklist_status == "good" and portal_status in {"not_applicable", "verified"}:
             item["systemNote"] = ""
         else:
             item["systemNote"] = item["statusReason"] if item["statusReason"] != item.get("manualVerificationRemark", "") else ""
